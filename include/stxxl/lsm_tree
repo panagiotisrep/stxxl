@@ -1,0 +1,2 @@
+// -*- mode: c++ -*-
+#include <stxxl/bits/containers/lsm_tree.h>
