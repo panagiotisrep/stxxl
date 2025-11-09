@@ -2,7 +2,7 @@
 
 #include <iostream>
 
-// #define VECTOR_LSTREE
+#define VECTOR_LSTREE
 #ifdef VECTOR_LSTREE
 typedef std::pair<int, char> value_type;
 bool operator==(const value_type &a, const value_type &b) {
@@ -56,13 +56,13 @@ int main() {
   }
 
   // shuffle elements
-  // for (int i = 0; i < size; ++i)
-  // {
-  //   auto temp = data[i];
-  //   auto new_index = rand() % size;
-  //   data[i] = data[new_index];
-  //   data[new_index] = temp;
-  // }
+  for (int i = 0; i < size; ++i)
+  {
+    auto temp = data[i];
+    auto new_index = rand() % size;
+    data[i] = data[new_index];
+    data[new_index] = temp;
+  }
 
   stxxl::stats_data stats_insert(*Stats);
   for (auto d : data) {

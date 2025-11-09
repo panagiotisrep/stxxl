@@ -181,6 +181,11 @@ STXXL_BEGIN_NAMESPACE
         r.m_run->insert(r.m_run->end(), pair);
 #endif
       }
+
+#ifdef VECTOR_LSTREE
+      r.m_run->flush();
+#endif
+
       // bw.finish();
       m_tiers[0].m_runs.push_back(std::move(r));
       compact_tiers();
@@ -222,7 +227,7 @@ STXXL_BEGIN_NAMESPACE
       for (auto& source : sources)
       {
 #ifndef VECTOR_LSTREE
-        source.m_run->enable_prefetching();
+        // source.m_run->enable_prefetching();
 #endif
         iters.emplace_back(source.m_run->begin(), source.m_run->end());
         total += source.m_run->size();
@@ -260,6 +265,7 @@ STXXL_BEGIN_NAMESPACE
           ++added;
         }
       }
+      final.m_run->flush();
 #else
       for (auto& iter : iters)
       {

@@ -15,7 +15,7 @@
 set(CMAKE_LEGACY_CYGWIN_WIN32 0) # needed to silence warning on cygwin
 
 # require cmake 2.6.2 (but please use 2.8.x)
-cmake_minimum_required(VERSION 2.6.2 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 
 # the STXXL project
 project(stxxl)

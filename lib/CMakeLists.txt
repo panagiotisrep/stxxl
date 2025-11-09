@@ -119,7 +119,8 @@ else()
   endif()
 
   # build stxxl STATIC library and link all programs again it
-  add_library(stxxl STATIC ${LIBSTXXL_SOURCES})
+  add_library(stxxl STATIC ${LIBSTXXL_SOURCES}
+          ../include/stxxl/bits/utils/hash.h)
   set_target_properties(stxxl PROPERTIES OUTPUT_NAME "${STXXL_LIBNAME}")
   set_target_properties(stxxl PROPERTIES VERSION "${STXXL_VERSION_STRING}")
   install(TARGETS stxxl
