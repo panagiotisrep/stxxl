@@ -44,7 +44,8 @@ int main()
   typedef stxxl::boa<unsigned long, char, unsigned long long, HashFunction, HashCompare>
     boa_type;
 
-  boa_type boa;
+  boa_type boa(8000, 50);
+  boa.print_info();
 
   // generate stats instance
   stxxl::stats* Stats = stxxl::stats::get_instance();
@@ -52,7 +53,7 @@ int main()
   stxxl::stats_data stats_begin(*Stats);
 
   std::vector<unsigned long> data;
-  int size = 100000;
+  int size = 1000000;
   data.reserve(size);
   for (int i = 1; i < size; ++i)
   {
@@ -64,6 +65,11 @@ int main()
   stxxl::stats_data stats_insert(*Stats);
   for (auto d : data)
   {
+    // if (d % 1000 == 0)
+    // {
+    //   std::cout << d << std::endl;
+    // }
+
     boa.insert(std::pair<unsigned long, char>(d, 'a'));
   }
 
@@ -72,15 +78,16 @@ int main()
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> elapsed = end - start;
   std::cout << "Insert time: " << elapsed.count() << " ms\n";
+  boa.print_internal_structure();
 
   stxxl::stats_data stats_search(*Stats);
   start = std::chrono::high_resolution_clock::now();
   for (auto d : data)
   {
-    if (d % 1000 == 0)
-    {
-      std::cout << d << std::endl;
-    }
+    // if (d % 1000 == 0)
+    // {
+    //   std::cout << d << std::endl;
+    // }
 
     auto value = boa.find(d);
     if (!value)
