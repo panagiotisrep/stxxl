@@ -11,7 +11,7 @@
 // }
 
 #include <stxxl/bits/utils/hash.h>
-#include <stxxl/boa>
+#include <stxxl/bot>
 #include <stxxl/bits/utils/hash.h>
 
 //! [comparator]
@@ -31,7 +31,7 @@ struct HashCompare
 //! [comparator]
 KWiseHash hash(30); // Example: aim for N ≈ 1e9 items → k ≈ ceil(log2 N) ≈ 30
 
-unsigned long long HashFunction(unsigned long const& k)
+uint64_t HashFunction(unsigned long const& k)
 {
   return hash.hash_uint64(k);
 }
@@ -41,11 +41,10 @@ int main()
   using clock = std::chrono::high_resolution_clock; // or steady_clock
   auto t0 = clock::now();
 
-  typedef stxxl::boa::boa<unsigned long, char, unsigned long long, HashFunction, HashCompare>
-    boa_type;
+  typedef stxxl::bot::bot<uint64_t, char, uint64_t, HashFunction, HashCompare>
+    bot_type;
 
-  boa_type boa(8000, 50);
-  boa.print_info();
+  bot_type bot(100, 4, 1000);
 
   // generate stats instance
   stxxl::stats* Stats = stxxl::stats::get_instance();
@@ -53,7 +52,7 @@ int main()
   stxxl::stats_data stats_begin(*Stats);
 
   std::vector<unsigned long> data;
-  int size = 100000;
+  int size = 50000;
   data.reserve(size);
   for (int i = 1; i < size; ++i)
   {
@@ -70,7 +69,7 @@ int main()
     //   std::cout << d << std::endl;
     // }
 
-    boa.insert(std::pair<unsigned long, char>(d, 'a'));
+    bot.insert(std::pair<unsigned long, char>(d, 'a'));
   }
 
   std::cout << "Insert\n" << (stxxl::stats_data(*Stats) - stats_insert);
@@ -78,18 +77,17 @@ int main()
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> elapsed = end - start;
   std::cout << "Insert time: " << elapsed.count() << " ms\n";
-  boa.print_internal_structure();
 
   stxxl::stats_data stats_search(*Stats);
   start = std::chrono::high_resolution_clock::now();
   for (auto d : data)
   {
-    // if (d % 1000 == 0)
-    // {
-    //   std::cout << d << std::endl;
-    // }
+    if (d % 100 == 0)
+    {
+      std::cout << d << std::endl;
+    }
 
-    auto value = boa.find(d);
+    auto value = bot.find(d);
     if (!value)
     {
       std::cout << "did not find " << d << std::endl;

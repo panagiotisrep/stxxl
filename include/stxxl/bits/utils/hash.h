@@ -8,24 +8,24 @@
 #include <bits/stdc++.h>
 
 // -------- Field math over p = 2^61 - 1 (Mersenne) --------
-static const unsigned long long P = (1ULL << 61) - 1;
+static const uint64_t P = (1ULL << 61) - 1;
 
-static inline unsigned long long reduce_mersenne(__uint128_t x) {
+static inline uint64_t reduce_mersenne(__uint128_t x) {
     // Fast reduction mod (2^61 - 1)
-    unsigned long long lo = (unsigned long long)(x & P);
-    unsigned long long hi = (unsigned long long)(x >> 61);
-    unsigned long long res = lo + hi;
+    uint64_t lo = (uint64_t)(x & P);
+    uint64_t hi = (uint64_t)(x >> 61);
+    uint64_t res = lo + hi;
     if (res >= P) res -= P;
     return res;
 }
 
-static inline unsigned long long add_mod(unsigned long long a, unsigned long long b) {
-    unsigned long long s = a + b;
+static inline uint64_t add_mod(uint64_t a, uint64_t b) {
+    uint64_t s = a + b;
     if (s >= P) s -= P;
     return s;
 }
 
-static inline unsigned long long mul_mod(unsigned long long a, unsigned long long b) {
+static inline uint64_t mul_mod(uint64_t a, uint64_t b) {
     return reduce_mersenne((__uint128_t)a * b);
 }
 
@@ -39,7 +39,7 @@ static inline uint64_t splitmix64(uint64_t x) {
 }
 
 // Hash a byte span into a field element in [0, P-1]
-static inline unsigned long long to_field(const void* data, size_t len, uint64_t seed = 0x123456789abcdef0ULL) {
+static inline uint64_t to_field(const void* data, size_t len, uint64_t seed = 0x123456789abcdef0ULL) {
     // Simple streaming SplitMix64; for stronger mixing, use SipHash/HighwayHash.
     const uint8_t* p = static_cast<const uint8_t*>(data);
     uint64_t acc = seed ^ (uint64_t)len;
@@ -59,22 +59,22 @@ static inline unsigned long long to_field(const void* data, size_t len, uint64_t
 // -------- k-wise independent hash family: degree-(k-1) polynomial --------
 struct KWiseHash {
     // h(x) = a0 + a1 x + ... + a_{k-1} x^{k-1} (mod P)
-    std::vector<unsigned long long> a; // coefficients
+    std::vector<uint64_t> a; // coefficients
     size_t k;
 
     // k = ceil(c * log2(N)); rng_seed deterministic for reproducibility
     KWiseHash(size_t k_, uint64_t rng_seed = 0xF00DF00DCAFEBABEULL) : k(k_) {
         a.resize(k);
         std::mt19937_64 rng(rng_seed);
-        std::uniform_int_distribution<unsigned long long> dist(0, P - 1);
+        std::uniform_int_distribution<uint64_t> dist(0, P - 1);
         for (size_t i = 0; i < k; ++i) a[i] = dist(rng);
     }
 
     // Hash raw bytes -> [0, P-1]
-    unsigned long long operator()(const void* data, size_t len) const {
-        unsigned long long x = to_field(data, len);
+    uint64_t operator()(const void* data, size_t len) const {
+        uint64_t x = to_field(data, len);
         // Horner's rule
-        unsigned long long h = 0;
+        uint64_t h = 0;
         for (size_t i = k; i-- > 0; ) {
             h = add_mod(mul_mod(h, x), a[i]);
         }
@@ -82,9 +82,9 @@ struct KWiseHash {
     }
 
     // Convenience: hash a 64-bit key
-    unsigned long long hash_uint64(uint64_t key) const {
-        unsigned long long x = (splitmix64(key) & P);
-        unsigned long long h = 0;
+    uint64_t hash_uint64(uint64_t key) const {
+        uint64_t x = (splitmix64(key) & P);
+        uint64_t h = 0;
         for (size_t i = k; i-- > 0; ) {
             h = add_mod(mul_mod(h, x), a[i]);
         }
