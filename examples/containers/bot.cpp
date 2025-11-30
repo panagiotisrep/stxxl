@@ -44,7 +44,7 @@ int main()
   typedef stxxl::bot::bot<uint64_t, char, uint64_t, HashFunction, HashCompare>
     bot_type;
 
-  bot_type bot(100, 4, 1000);
+  bot_type bot(100, 9, 1000);
 
   // generate stats instance
   stxxl::stats* Stats = stxxl::stats::get_instance();
