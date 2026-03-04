@@ -26,7 +26,9 @@ STXXL_BEGIN_NAMESPACE
     class settings
     {
     public:
-      settings* get_instance()
+      uint8_t m_char_size;
+      uint8_t m_q; // for
+      static settings* get_instance()
       {
         static std::unique_ptr<settings> instance;
         if (!instance)
@@ -121,6 +123,15 @@ STXXL_BEGIN_NAMESPACE
       {
         return get_bits(hash, char_no, char_bits_length);
       }
+
+      template <typename NT1, typename NT2>
+      uint32_t copyShifted(NT1 dst, NT2 src, int dstPos, int srcPos, int len)
+      {
+        int srcMask = ((1 << len) - 1) << srcPos;
+        int bits = (src & srcMask) >> srcPos; // extract
+        int mask = ((1 << len) - 1) << dstPos; // destination positions
+        return (dst & ~mask) | (bits << dstPos); // write
+      }
     } // namespace bits_manipulation.
 
 
@@ -149,55 +160,6 @@ STXXL_BEGIN_NAMESPACE
       uint32_t block_size{};
     };
 
-    template <class HashType>
-    struct character_queue
-    {
-      struct sketch
-      {
-        prefix_t m_prefix[10];
-        char_t m_next_char[10]{};
-        char_t m_check_char[10]{};
-      };
-
-      typedef typename VECTOR_GENERATOR<sketch, 4, 8, 1 * 1024 * 1024, stxxl::RC, stxxl::lru>::result sketches;
-
-      std::map<unsigned char, std::unique_ptr<sketches>> m_sketches{};
-      unsigned int m_q;
-      unsigned int m_char_size;
-
-      character_queue(unsigned int q, unsigned int char_size) : m_q(q), m_char_size(char_size)
-      {
-        for (unsigned int i = 0; i < q; ++i)
-        {
-          m_sketches[pow(2, i)].reset(new sketches());
-        }
-      }
-
-      void insert_hash(HashType const& hash)
-      {
-        using namespace bits_manipulation;
-
-        // todo i=0
-
-        for (unsigned int q = 0; q < m_q; ++q)
-        {
-          auto i_from = static_cast<int>(pow(2, q));
-          auto i_to = static_cast<int>(pow(2, q+1)) - 1;
-
-          auto & sigma_j = m_sketches[i_from];
-
-          sketch s;
-          for (int j = i_from; j < i_to; ++j)
-          {
-            s.m_prefix = get_prefix(hash, (j + 1) * m_char_size);
-            s.m_check_char[i] = get_char_of_hash_from_the_end(hash, i, m_char_size);
-            s.m_next_char[i] = get_char_of_hash(hash, i + 1, m_char_size);
-            sigma_j->push_back(s);
-          }
-        }
-      }
-    };
-
     struct sketch
     {
       unsigned char m_routing_child_ptr{};
@@ -205,6 +167,175 @@ STXXL_BEGIN_NAMESPACE
       uint8_t m_next_char{};
       uint32_t m_prefix{};
       uint8_t m_prefix_last_char{};
+    };
+
+    template <class HashType>
+    struct character_queue
+    {
+      struct sketch
+      {
+        prefix_t m_prefix{};
+        char_t m_next_char[15]{};
+        char_t m_check_char[15]{};
+      };
+
+      struct ret_sketch
+      {
+        prefix_t m_prefix{};
+        char_t m_next_char{};
+        char_t m_check_char{};
+      };
+
+      typedef typename VECTOR_GENERATOR<sketch, 4, 8, 1 * 1024 * 1024, stxxl::RC, stxxl::lru>::result sketches;
+      typedef typename VECTOR_GENERATOR<ret_sketch, 4, 8, 1 * 1024 * 1024, stxxl::RC, stxxl::lru>::result ret_sketches;
+
+      std::map<unsigned char, std::list<std::unique_ptr<sketches>>> m_sketches{};
+      unsigned int m_q;
+      unsigned int m_char_size;
+      unsigned int m_height_in_tree;
+
+      character_queue(unsigned int q, unsigned int char_size, unsigned int height_in_tree)
+        : m_q(q),
+          m_char_size(char_size),
+          m_height_in_tree(height_in_tree)
+      {
+      }
+
+      void insert_hash(HashType const& hash)
+      {
+        using namespace bits_manipulation;
+
+
+        for (unsigned int q = 1; q <= m_q; ++q)
+        {
+          auto i_from = static_cast<int>(pow(2, q));
+          auto i_to = static_cast<int>(pow(2, q + 1)) - 1;
+          auto& sigma_j = m_sketches[i_from].back();
+
+          if (!sigma_j)
+          {
+            sigma_j.reset(new sketches());
+          }
+
+          sketch s;
+          for (int j = i_from; j < i_to; ++j)
+          {
+            s.m_prefix = get_prefix(hash, j * m_char_size);
+            s.m_check_char[j - i_from] = get_char_of_hash_from_the_end(hash, j, m_char_size);
+            s.m_next_char[j - i_from] = get_char_of_hash(hash, j, m_char_size);
+          }
+          sigma_j->push_back(s);
+        }
+      }
+
+      template <typename NT>
+      uint8_t trailing_zeros(NT n)
+      {
+        if (n == 0) return sizeof(NT) * 8; // or whatever convention
+        return __builtin_ctz(n);
+      }
+
+      std::unique_ptr<ret_sketches> merge_runs(std::list<std::unique_ptr<sketches>> const& sources,
+                                           uint8_t chars_in_prefix)
+      {
+        using list_it = typename sketches::const_iterator;
+        std::unique_ptr<ret_sketches> final_run(new ret_sketches());
+
+        std::vector<std::pair<list_it, list_it>> iters;
+
+        for (auto& source : sources)
+        {
+          iters.emplace_back(source->begin(), source->end());
+        }
+
+        HashType min_key{};
+        uint8_t char_size = m_char_size;
+        auto get_prefix_with_next_char = [chars_in_prefix, char_size](prefix_t const& prefix,
+                                                                      char_t const next_char[15])
+        {
+          return bits_manipulation::copyShifted(prefix,
+                                                next_char[0],
+                                                sizeof(prefix_t) * 8 - chars_in_prefix * char_size,
+                                                0,
+                                                char_size);
+        };
+
+        size_t index{0};
+
+        while (!iters.empty())
+        {
+          min_key = std::numeric_limits<HashType>::max();
+          bool add{false};
+          auto iter_pair = iters.begin();
+          auto* vec_it_to_move = &(iter_pair->first);
+          while (iter_pair != iters.end())
+          {
+            if (iter_pair->first == iter_pair->second)
+            {
+              iter_pair = iters.erase(iter_pair);
+              continue;
+            }
+            auto current_prefix = get_prefix_with_next_char(iter_pair->first->m_prefix,
+                                                            iter_pair->first->m_next_char);
+            if (current_prefix < min_key)
+            {
+              min_key = current_prefix;
+              add = true;
+              vec_it_to_move = &(iter_pair->first);
+            }
+            ++iter_pair;
+          }
+          if (add)
+          {
+            (*final_run)[index++].m_prefix = (*vec_it_to_move)->m_prefix;
+            (*final_run)[index++].m_next_char = (*vec_it_to_move)->m_next_char[0];
+            (*final_run)[index++].m_check_char = (*vec_it_to_move)->m_check_char[0];
+            ++(*vec_it_to_move);
+          }
+        }
+
+        return {};
+      }
+
+      sketches merge(character_queue * c_queue)
+      {
+        sketches ret;
+
+        auto ro = trailing_zeros(m_height_in_tree + 1);
+
+        auto series = std::move(c_queue->m_sketches.begin()->second);
+        auto series_q = c_queue->m_sketches.begin()->first;
+
+        if (series_q == 1)
+        {
+          auto jq = static_cast<int>(pow(2, series_q));
+          auto merged_series = std::move(merge_runs(series, jq));
+
+          sketches* target_series{};
+          // if (m_sketches.count(1) > 0)
+          // {
+          //   target_series = m_sketches[1].get();
+          // }
+          // else
+          // {
+          //   target_series = new sketches();
+          // }
+
+
+          // for (int i = 0; i < series->size(); ++i)
+          // {
+          //   ret.push_back(series->second[i]);
+          //
+          //   for (int q = 0; q <= ro; ++q)
+          //   {
+          //     auto i_from = static_cast<int>(pow(2, q));
+          //     auto i_to = static_cast<int>(pow(2, q + 1)) - 1;
+          //     auto& sigma_j = c_queue.m_sketches[i_from].back();
+          //   }
+          // }
+        }
+        return ret;
+      }
     };
 
     template <class HashType>
@@ -290,7 +421,8 @@ STXXL_BEGIN_NAMESPACE
 
       size_t get_prefix(HashType const& hash)
       {
-        return bits_manipulation::get_high_bits(hash, m_prefix_bits_length) << (sizeof(uint32_t) * 8 - m_prefix_bits_length);
+        return bits_manipulation::get_high_bits(hash, m_prefix_bits_length) << (sizeof(uint32_t) * 8 -
+          m_prefix_bits_length);
       }
 
       char_t get_char_after_prefix(HashType const& hash)
@@ -383,21 +515,22 @@ STXXL_BEGIN_NAMESPACE
       }
 
 
-      void insert_hash(HashType const& hash, unsigned char routing_child_ptr)
+      void insert_hash(prefix_t prefix, unsigned char routing_child_ptr, char_t check_char, char_t next_char)
       {
         using namespace bits_manipulation;
-        if (hash == 630133364300331789)
-        {
-          auto a = 3;
-        }
+        // if (hash == 630133364300331789)
+        // {
+        // auto a = 3;
+        // }
         list_node node;
         node.m_routing_child_ptr = routing_child_ptr;
-        node.m_prefix = get_prefix(hash);
+        node.m_prefix = prefix; //get_prefix(hash);
         // node.m_hash = hash;
-        node.m_check_char = get_bits_translated_lowest_position(hash, m_check_char_index, m_char_bits_length);
-        node.m_next_char = get_char_after_prefix(hash);
+        node.m_check_char = check_char;
+        //get_bits_translated_lowest_position(hash, m_check_char_index, m_char_bits_length);
+        node.m_next_char = next_char; //get_char_after_prefix(hash);
 
-        auto pivot_prefix = get_high_bits(hash, m_pivot_prefix_bits_length);
+        auto pivot_prefix = get_high_bits(prefix, m_pivot_prefix_bits_length);
         auto pivot_prefix_index_in_list = (*m_sketches_hashmap)[pivot_prefix];
 
         if (pivot_prefix_index_in_list == -1)
@@ -415,7 +548,7 @@ STXXL_BEGIN_NAMESPACE
       {
         for (list_node sketch : f.m_sketches.m_list)
         {
-          insert_hash(sketch.m_hash, new_child_ptr);
+          // insert_hash(sketch.m_hash, new_child_ptr);
         }
       }
     };
@@ -440,15 +573,16 @@ STXXL_BEGIN_NAMESPACE
         std::vector<abstract_node*> m_children;
         uint32_t m_max_fan_out;
         std::unique_ptr<routing_filter<HashType>> m_routing_filter;
-        std::unique_ptr<character_queue<HashType>> m_character_queue;
         size_t m_log_ptr{};
         uint32_t m_height_in_tree;
+        unsigned char m_char_size;
 
-        node_t(uint32_t max_fan_out, uint32_t height_in_tree) : m_max_fan_out(max_fan_out),
-                                                                m_height_in_tree(height_in_tree)
+        node_t(uint32_t max_fan_out, uint32_t height_in_tree, unsigned char char_size) :
+          m_max_fan_out(max_fan_out),
+          m_height_in_tree(height_in_tree),
+          m_char_size(char_size)
         {
-          m_routing_filter.reset(new routing_filter<HashType>(m_height_in_tree, 3, m_height_in_tree - 1));
-          m_character_queue.reset(new character_queue<HashType>(7, 3));
+          m_routing_filter.reset(new routing_filter<HashType>(m_height_in_tree, char_size, m_height_in_tree - 1));
         }
 
         ~node_t() override
@@ -559,10 +693,14 @@ STXXL_BEGIN_NAMESPACE
       node_t* m_root;
       uint32_t m_max_fan_out;
       uint32_t m_height;
+      unsigned char m_char_size;
 
-      explicit routing_tree(uint32_t max_fan_out, uint32_t m_height) : m_max_fan_out(max_fan_out), m_height(m_height)
+      explicit routing_tree(uint32_t max_fan_out, uint32_t m_height, unsigned char char_size) :
+        m_max_fan_out(max_fan_out),
+        m_height(m_height),
+        m_char_size(char_size)
       {
-        m_root = new node_t(max_fan_out, m_height);
+        m_root = new node_t(max_fan_out, m_height, char_size);
       }
 
       ~routing_tree()
@@ -596,11 +734,11 @@ STXXL_BEGIN_NAMESPACE
         return m_root->m_children.size();
       }
 
-      void merge(routing_tree const& other)
+      void merge(routing_tree const& other, character_queue<HashType>& queue)
       {
         auto new_child_ptr = insert_node_under_root(other.m_root);
         m_root->m_routing_filter->merge(*(other.m_root->m_routing_filter),
-                                        *(other.m_root->m_character_queue),
+                                        queue,
                                         new_child_ptr);
       }
 
@@ -612,9 +750,15 @@ STXXL_BEGIN_NAMESPACE
 
       void insert_hash(HashType const& hash)
       {
+        using namespace bits_manipulation;
+
         auto new_leaf_index_in_root = root_children_number();
-        m_root->m_routing_filter->insert_hash(hash, new_leaf_index_in_root);
-        m_root->m_character_queue->insert_hash(hash);
+        m_root->m_routing_filter->insert_hash(
+          get_prefix(hash, m_char_size),
+          new_leaf_index_in_root,
+          get_char_of_hash_from_the_end(hash, 0, m_char_size),
+          get_char_of_hash(hash, 1, m_char_size)
+        );
       }
     };
 
@@ -629,13 +773,14 @@ STXXL_BEGIN_NAMESPACE
       typedef std::pair<KeyType, DataType> element_type;
       using log_element_t = typename external_memory_log<KeyType, DataType, HashType>::log_element;
       using routing_tree_t = routing_tree<KeyType, DataType, HashType>;
+      using character_queue_t = character_queue<HashType>;
 
     private:
       struct tier
       {
         uint32_t tier_no{};
         std::unique_ptr<routing_tree<KeyType, DataType, HashType>> m_routing_tree;
-        // character queue
+        std::unique_ptr<character_queue<HashType>> m_character_queue;
       };
 
       //! In-memory cache
@@ -707,15 +852,23 @@ STXXL_BEGIN_NAMESPACE
       routing_tree_t* create_routing_tree(uint32_t height)
       {
         static_cast<void>(height);
-        return new routing_tree_t(m_lambda, height);
+        return new routing_tree_t(m_lambda, height, 3);
       }
 
-      //! initialize the lsm tree
+      character_queue_t* create_character_queue(uint8_t height)
+      {
+        auto settings = settings::get_instance();
+        return new character_queue<HashType>(settings->m_q, settings->m_char_size, height);
+      }
+
       void init()
       {
         tier t0;
         t0.tier_no = 1;
         t0.m_routing_tree.reset(create_routing_tree(1));
+        auto settings = settings::get_instance();
+        t0.m_character_queue.reset(new character_queue<HashType>(settings->m_q, settings->m_char_size, 1));
+
         m_tiers.push_back(std::move(t0));
       }
 
@@ -726,6 +879,11 @@ STXXL_BEGIN_NAMESPACE
         {
           m_tiers[0].m_routing_tree.reset(create_routing_tree(1));
         }
+        if (!m_tiers[0].m_character_queue)
+        {
+          auto settings = settings::get_instance();
+          m_tiers[0].m_character_queue.reset(new character_queue<HashType>(settings->m_q, settings->m_char_size, 1));
+        }
 
         auto leaf = new typename routing_tree_t::leaf_t(m_log.added);
 
@@ -734,6 +892,7 @@ STXXL_BEGIN_NAMESPACE
           m_log.m_log.push_back(element.second);
           ++(m_log.added);
           m_tiers[0].m_routing_tree->insert_hash(element.second.m_hash);
+          m_tiers[0].m_character_queue->insert_hash(element.second.m_hash);
         } // for (auto const & element : m_in_memory_log).
 
         m_tiers[0].m_routing_tree->insert_node_under_root(leaf);
@@ -754,20 +913,23 @@ STXXL_BEGIN_NAMESPACE
               auto t = tier();
               t.tier_no = new_tier_no + 1;
               t.m_routing_tree.reset(create_routing_tree(new_tier_no + 1));
+              t.m_character_queue.reset(create_character_queue(new_tier_no + 1));
               m_tiers.push_back(std::move(t));
             }
 
-            merge_routing_trees(m_tiers[tier_no], m_tiers[new_tier_no]);
+            merge_tiers(m_tiers[tier_no], m_tiers[new_tier_no]);
             m_tiers[tier_no].m_routing_tree->m_root = nullptr;
             m_tiers[tier_no].m_routing_tree.reset(create_routing_tree(tier_no + 1));
+            m_tiers[tier_no].m_character_queue.reset(create_character_queue(tier_no + 1));
           }
         } // for (int32_t tier_no = 0; tier_no < m_tiers.size(); ++tier_no).
       }
 
       //! merge runs into next tier
-      void merge_routing_trees(tier& source_tier, tier& dest_tier)
+      void merge_tiers(tier& source_tier, tier& dest_tier)
       {
-        dest_tier.m_routing_tree->merge(*(source_tier.m_routing_tree));
+        dest_tier.m_routing_tree->merge(*(source_tier.m_routing_tree), *(source_tier.m_character_queue));
+        dest_tier.m_character_queue->merge(source_tier.m_character_queue.get());
       }
     };
   } // namespace bot.
