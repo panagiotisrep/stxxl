@@ -17,6 +17,8 @@
 #include <stxxl/vector>
 #include <queue>
 
+// #define BOA_SEARCH_VIA_BUCKETS
+
 STXXL_BEGIN_NAMESPACE
   namespace boa
   {
@@ -34,39 +36,16 @@ STXXL_BEGIN_NAMESPACE
 
       typedef typename VECTOR_GENERATOR<routing_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
       routing_external_vector;
-      // , 4, 8, 1 * 1024 * 1024, stxxl::RC, stxxl::lru
-      // typedef typename VECTOR_GENERATOR<
-      // routing_element,
-      // 8, // larger page subdivision
-      // 16, // modest pager (important!)
-      // 2 * 1024 * 1024, // larger blocks (2MB)
-      // stxxl::RC,
-      // stxxl::lru
-      // >::result routing_external_vector;
 
       unsigned int prefix_bits_length_;
       std::unique_ptr<routing_external_vector> m_filter;
 
-      // explicit routing_filter(const unsigned int prefix_bits_length) : prefix_bits_length_(prefix_bits_length)
-      // {
-      //   m_filter = std::unique_ptr<routing_external_vector>(new routing_external_vector(static_cast<size_t>(std::pow(2, prefix_bits_length))));
-      //   // m_filter->resize(static_cast<size_t>(std::pow(2, prefix_bits_length)));
-      //   // std::fill(m_filter->begin(), m_filter->end(), std::pair<run_index, unsigned int>(-1, 0));
-      // }
-
       explicit routing_filter(const unsigned int entries)
       {
-        m_filter = std::unique_ptr<routing_external_vector>(new routing_external_vector(entries));
         prefix_bits_length_ = std::floor(std::log2(entries));
+        m_filter = std::unique_ptr<routing_external_vector>(new routing_external_vector(std::pow(2, prefix_bits_length_)));
+        reset();
       }
-
-      // routing_filter(unsigned int char_bits_length, unsigned int number_of_brackets)
-      // {
-      //   prefix_bits_length_ = std::ceil(std::log2(char_bits_length * number_of_brackets));
-      //   m_filter = std::unique_ptr<routing_external_vector>(new routing_external_vector(char_bits_length * number_of_brackets));
-      //   // m_filter->resize(static_cast<size_t>(std::pow(2, prefix_bits_length)));
-      //   // std::fill(m_filter->begin(), m_filter->end(), std::pair<run_index, unsigned int>(-1, 0));
-      // }
 
       void reset()
       {
@@ -74,15 +53,7 @@ STXXL_BEGIN_NAMESPACE
         element.run = 0;
         element.index = 0;
         std::fill(m_filter->begin(), m_filter->end(), element);
-        // TODO need this?
       }
-
-      // size_t get_bits(HashType const& x, const unsigned group_index, unsigned group_size) noexcept
-      // {
-      //   typedef typename std::make_unsigned<HashType>::type U;
-      //   U mask = (U(1) << group_size) - U(1);
-      //   return (U(x) >> (group_index * group_size)) & mask;
-      // }
 
       size_t get_bits(HashType const& x, const unsigned bits_length) noexcept
       {
@@ -103,7 +74,6 @@ STXXL_BEGIN_NAMESPACE
 
       bool equal_prefixes(HashType const& h1, HashType const& h2)
       {
-        // return get_bits(h1, 0, m_char_bits_length * m_chars_no) == get_bits(h2, 0, m_char_bits_length * m_chars_no);
         return get_bits(h1, prefix_bits_length_) == get_bits(h2, prefix_bits_length_);
       }
 
@@ -143,6 +113,13 @@ STXXL_BEGIN_NAMESPACE
     {
     public:
       typedef std::pair<KeyType, DataType> element_type;
+
+      struct stats
+      {
+        std::unordered_map<uint16_t, size_t> tier_to_collisions;
+      };
+
+      stats m_stats;
 
       struct search_stats
       {
@@ -228,15 +205,6 @@ STXXL_BEGIN_NAMESPACE
       typedef typename VECTOR_GENERATOR<run_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
       external_vector;
 
-      // typedef typename VECTOR_GENERATOR<
-      // run_element,
-      // 8, // larger page subdivision
-      // 16, // modest pager (important!)
-      // 2 * 1024 * 1024, // larger blocks (2MB)
-      // stxxl::RC,
-      // stxxl::lru
-      // >::result external_vector;
-
       struct run
       {
         external_vector m_run;
@@ -249,11 +217,6 @@ STXXL_BEGIN_NAMESPACE
         unsigned int m_bucket_size{}; // elements per bucket
         bool active{false};
         size_t m_size{0};
-
-        // ~run()
-        // {
-        //   delete m_run;
-        // }
       };
 
       struct tier
@@ -267,7 +230,7 @@ STXXL_BEGIN_NAMESPACE
       std::vector<tier> m_tiers;
 
     public:
-      boa(unsigned int buffer_size) :
+      explicit boa(unsigned int buffer_size) :
         m_in_memory_table_max_size(buffer_size) { init(); }
 
       //! Insert a key-value pair in the lsm tree
@@ -275,7 +238,6 @@ STXXL_BEGIN_NAMESPACE
       {
         HashType hash;
         hash = HashFunction(value.first);
-        // m_in_memory_table[hash] = value;
         m_in_memory_table.push_back({hash, value});
 
         if (m_in_memory_table.size() >= m_in_memory_table_max_size)
@@ -326,11 +288,10 @@ STXXL_BEGIN_NAMESPACE
         for (auto const& tier : m_tiers)
         {
           ++at_tier;
-          // TODO maybe this helps speed?
-          // if (active_runs(tier) == 0)
-          // {
-          //   continue;
-          // }
+          if (active_runs(tier) == 0)
+          {
+            continue;
+          }
 
           small_vec<int, RunsPerTier> visited_runs;
           auto run_to_search = tier.m_routing_filter->get_run_index(hash);
@@ -353,6 +314,7 @@ STXXL_BEGIN_NAMESPACE
                 stats.runs_per_tier[at_tier] += 1;
               }
 
+#ifdef BOA_SEARCH_VIA_BUCKETS
               ++stats.visited_runs;
               auto bucket_no = bucket_index(hash, r);
               std::size_t start = bucket_no * r.m_bucket_size;
@@ -360,13 +322,43 @@ STXXL_BEGIN_NAMESPACE
 
               std::size_t stop = r.m_run.size() < end ? r.m_run.size() : end;
 
-              // external_vector const & v = r.m_run;
-              // auto prev = v[run_to_search.second];
-              // if (prev.m_hash == hash)
-              // {
-              // return std::unique_ptr<element_type>(new element_type(prev.m_key, prev.m_value));
-              // }
+              external_vector const& v = r.m_run;
+              auto prev = v[run_to_search.second];
+              if (prev.m_hash == hash)
+              {
+                return std::unique_ptr<element_type>(new element_type(prev.m_key, prev.m_value));
+              }
 
+              for (int at = start; at < stop; at++)
+              {
+                ++stats.visited_elements;
+                stats.elements_per_tier[at_tier] += 1;
+                run_element e = v[at];
+                auto h = e.m_hash;
+                if (h == 0)
+                {
+                  ++stats.empty_elements;
+                }
+                if (h > hash)
+                {
+                  break;
+                }
+                else if (h == hash)
+                {
+                  return std::unique_ptr<element_type>(new element_type(e.m_key, e.m_value));
+                }
+              } // for (int at = start; at < stop; at++).
+
+              if (prev.m_prev_run != -1 && !visited_runs.contains(prev.m_prev_run))
+              {
+                visited_runs.push_unique(prev.m_prev_run);
+                run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
+              }
+              else
+              {
+                run_to_search.first = -1;
+              }
+#else
               external_vector const* v = &(tier.m_runs[run_to_search.first].m_run);
               auto prev_run = run_to_search.first;
               while (run_to_search.first != -1)
@@ -380,7 +372,7 @@ STXXL_BEGIN_NAMESPACE
                 }
 
                 auto prev = (*v)[run_to_search.second];
-                if (prev.m_hash == hash)
+                if (prev.m_hash == hash && prev.m_key == k)
                 {
                   return std::unique_ptr<element_type>(new element_type(prev.m_key, prev.m_value));
                 }
@@ -390,37 +382,7 @@ STXXL_BEGIN_NAMESPACE
                 }
                 run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
               }
-
-              // for (int at = start; at < stop; at++)
-              // {
-              //   ++stats.visited_elements;
-              //   stats.elements_per_tier[at_tier] += 1;
-              //   run_element e = v[at];
-              //   auto h = e.m_hash;
-              //   if (h == 0)
-              //   {
-              //     ++stats.empty_elements;
-              //   }
-              //   if (h > hash)
-              //   {
-              //     break;
-              //   }
-              //   else if (h == hash)
-              //   {
-              //     return std::unique_ptr<element_type>(new element_type(e.m_key, e.m_value));
-              //   }
-              // } // for (int at = start; at < stop; at++).
-              //
-              // // auto prev = v[run_to_search.second];
-              // if (prev.m_prev_run != -1 && !visited_runs.contains(prev.m_prev_run))
-              // {
-              //   visited_runs.push_unique(prev.m_prev_run);
-              //   run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
-              // }
-              // else
-              // {
-              //   run_to_search.first = -1;
-              // }
+#endif
             } // if (r.active).
             else
             {
@@ -528,6 +490,7 @@ STXXL_BEGIN_NAMESPACE
           }
         }
 
+#ifdef BOA_SEARCH_VIA_BUCKETS
         // find buckets info
         const unsigned int intervals_no = get_buckets_no(m_in_memory_table.size());
         const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
@@ -549,6 +512,7 @@ STXXL_BEGIN_NAMESPACE
         }
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
+#endif
 
         // init run and flush elements
         int first_inactive_index = 0;
@@ -566,16 +530,21 @@ STXXL_BEGIN_NAMESPACE
 
         run& r = m_tiers[0].m_runs[first_inactive_index];
         r.active = true;
+#ifdef BOA_SEARCH_VIA_BUCKETS
         r.m_run_size = max_bucket_size * intervals_no;
         r.m_bucket_size = max_bucket_size;
-        r.m_max_hash = max;
-        r.m_min_hash = min;
         r.m_bucket_interval = interval_size;
         r.m_buckets_no = intervals_no;
+#else
+        r.m_run_size = m_in_memory_table.size();
+        r.m_bucket_size = 0;
+#endif
+        r.m_max_hash = max;
+        r.m_min_hash = min;
         r.m_elements_number = 0;
         // r.m_run = std::unique_ptr<external_vector>(new external_vector(r.m_run_size));
-        r.m_run.resize(r.m_run_size, true);
-        std::fill(r.m_run.begin(), r.m_run.end(), empty_element);
+        r.m_run.resize(r.m_run_size);
+        // std::fill(r.m_run.begin(), r.m_run.end(), empty_element);
         r.m_size = 0;
 
         int at_bucket{0};
@@ -587,6 +556,7 @@ STXXL_BEGIN_NAMESPACE
 
         while (it != m_in_memory_table.end())
         {
+#ifdef BOA_SEARCH_VIA_BUCKETS
           bool inserted_new_element{false};
           if (bucket_index(it->first) == at_bucket)
           {
@@ -602,10 +572,12 @@ STXXL_BEGIN_NAMESPACE
             elem.m_prev_run = prev_route.first;
             elem.m_prev_index_in_run = prev_route.second;
             auto index_in_array = total_added;
-            // if (prev_route.first == first_inactive_index)
-            // {
-            // index_in_array = prev_route.second;
-            // }
+#ifdef BOA_SEARCH_VIA_BUCKETS
+            if (prev_route.first == first_inactive_index)
+            {
+              index_in_array = prev_route.second;
+            }
+#endif
             m_tiers[0].m_routing_filter->insert(first_inactive_index, index_in_array, elem.m_hash);
 
             (r.m_run)[index++] = elem;
@@ -613,8 +585,7 @@ STXXL_BEGIN_NAMESPACE
           } //if (bucket_index(it->first) == at_bucket).
           else
           {
-            (r.m_run)[index++] = empty_element; // fill bucket
-            // index++;
+            r.m_run[index++] = empty_element; // fill bucket
             ++r.m_size;
           }
 
@@ -630,8 +601,37 @@ STXXL_BEGIN_NAMESPACE
           {
             ++it;
           }
+#else
+          ++(r.m_elements_number);
+
+          run_element elem;
+          elem.m_hash = it->first;
+          elem.m_key = it->second.first;
+          elem.m_value = it->second.second;
+
+          auto prev_route = m_tiers[0].m_routing_filter->get_run_index(elem.m_hash);
+          if (prev_route.first > first_inactive_index)
+          {
+            prev_route.first = 0;
+            prev_route.second = 0;
+          }
+          elem.m_prev_run = prev_route.first;
+          elem.m_prev_index_in_run = prev_route.second;
+          auto index_in_array = index;
+          m_tiers[0].m_routing_filter->insert(first_inactive_index, index_in_array, elem.m_hash);
+
+          (r.m_run)[index++] = elem;
+          ++r.m_size;
+          ++it;
+#endif
         } // while (it != m_in_memory_table.end()).
 
+#ifdef BOA_SEARCH_VIA_BUCKETS
+        while (index < r.m_run.size())
+        {
+          r.m_run[index++] = empty_element;
+        }
+#endif
         // m_tiers[0].m_runs.push_back(std::move(r));
         compact_tiers();
       }
@@ -662,6 +662,7 @@ STXXL_BEGIN_NAMESPACE
               m_tiers.push_back(tier());
               m_tiers[new_tier_no].m_runs.reserve(RunsPerTier);
               m_tiers[new_tier_no].m_level = new_tier_no;
+              m_stats.tier_to_collisions[new_tier_no] = 0;
             }
 
             if (m_tiers[new_tier_no].m_runs.size() < RunsPerTier)
@@ -676,197 +677,18 @@ STXXL_BEGIN_NAMESPACE
               run.active = false;
             }
             m_tiers[tier_no].m_routing_filter->reset();
+            m_stats.tier_to_collisions[tier_no] = 0;
           }
         } // for (auto & tier : m_tiers).
       }
 
       //! merge runs into next tier
-      // void merge_runs(std::vector<run> const& sources, tier& dest_tier)
-      // {
-      //   using vec_it = typename external_vector::const_iterator;
-      //
-      //   std::vector<std::pair<vec_it, vec_it>> iters;
-      //   size_t total_elements{0};
-      //   HashType min = std::numeric_limits<HashType>::max();
-      //   HashType max = std::numeric_limits<HashType>::min();
-      //   for (auto& source : sources)
-      //   {
-      //     if (min > source.m_min_hash)
-      //     {
-      //       min = source.m_min_hash;
-      //     }
-      //     if (max < source.m_max_hash)
-      //     {
-      //       max = source.m_max_hash;
-      //     }
-      //
-      //     iters.emplace_back(source.m_run.begin(), source.m_run.end());
-      //     total_elements += source.m_elements_number;
-      //   }
-      //
-      //   if (!dest_tier.m_routing_filter)
-      //   {
-      //     // std::cout << "Creating new filter size " << 4 + std::log2(total_elements) << std::endl;
-      //     dest_tier.m_routing_filter.reset(create_routing_filter(total_elements));
-      //   }
-      //
-      //   // find buckets info
-      //   const unsigned int intervals_no = get_buckets_no(total_elements);
-      //   const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
-      //   auto bucket_index = [&interval_size, &min, &intervals_no](HashType const& h)
-      //   {
-      //     auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
-      //     // ensure max value falls in the last interval
-      //     if (index >= intervals_no)
-      //     {
-      //       index = intervals_no - 1;
-      //     }
-      //     return index;
-      //   };
-      //
-      //   std::vector<unsigned int> buckets_size(intervals_no, 0);
-      //   auto iters_temp = iters;
-      //   run_element min_key;
-      //   while (!iters_temp.empty())
-      //   {
-      //     min_key.m_hash = std::numeric_limits<KeyType>::max();
-      //     bool add{false};
-      //     auto iter_pair = iters_temp.begin();
-      //     auto* vec_it_to_move = &(iter_pair->first);
-      //     while (iter_pair != iters_temp.end())
-      //     {
-      //       if (iter_pair->first == iter_pair->second)
-      //       {
-      //         iter_pair = iters_temp.erase(iter_pair);
-      //         continue;
-      //       }
-      //       if (iter_pair->first->m_hash == 0) // empty element
-      //       {
-      //         ++(iter_pair->first);
-      //         continue;
-      //       }
-      //       if (iter_pair->first->m_hash < min_key.m_hash)
-      //       {
-      //         min_key.m_hash = iter_pair->first->m_hash;
-      //         add = true;
-      //         vec_it_to_move = &(iter_pair->first);
-      //       }
-      //       ++iter_pair;
-      //     }
-      //     if (add)
-      //     {
-      //       auto a = bucket_index(min_key.m_hash);
-      //       ++buckets_size[bucket_index(min_key.m_hash)];
-      //     }
-      //     ++(*vec_it_to_move);
-      //   }
-      //
-      //   const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-      //
-      //   int first_inactive_index = 0;
-      //   for (auto const & run : dest_tier.m_runs)
-      //   {
-      //     if (!run.active)
-      //     {
-      //       break;
-      //     }
-      //     ++first_inactive_index;
-      //   }
-      //   run_element empty_element;
-      //   empty_element.m_hash = 0;
-      //
-      //   run & final = dest_tier.m_runs[first_inactive_index];
-      //   final.active = true;
-      //   final.m_run_size = max_bucket_size * intervals_no;
-      //   final.m_bucket_size = max_bucket_size;
-      //   final.m_max_hash = max;
-      //   final.m_min_hash = min;
-      //   final.m_bucket_interval = interval_size;
-      //   final.m_buckets_no = intervals_no;
-      //   final.m_elements_number = 0;
-      //   // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
-      //   final.m_run.resize(final.m_run_size, true);
-      //   std::fill( final.m_run.begin(),  final.m_run.end(), empty_element);
-      //
-      //   unsigned int at_bucket{0};
-      //   unsigned int added{0};
-      //   size_t total_added{0};
-      //   size_t index{0};
-      //
-      //   while (!iters.empty())
-      //   {
-      //     min_key.m_hash = std::numeric_limits<KeyType>::max();
-      //     bool add{false};
-      //     auto iter_pair = iters.begin();
-      //     auto* vec_it_to_move = &(iter_pair->first);
-      //     while (iter_pair != iters.end())
-      //     {
-      //       if (iter_pair->first == iter_pair->second)
-      //       {
-      //         iter_pair = iters.erase(iter_pair);
-      //         continue;
-      //       }
-      //       if (iter_pair->first->m_hash == 0)
-      //       {
-      //         ++(iter_pair->first);
-      //         continue;
-      //       }
-      //       if (iter_pair->first->m_hash < min_key.m_hash)
-      //       {
-      //         min_key = *(iter_pair->first);
-      //         add = true;
-      //         vec_it_to_move = &(iter_pair->first);
-      //       }
-      //       ++iter_pair;
-      //     }
-      //     if (add)
-      //     {
-      //       while (bucket_index(min_key.m_hash) != at_bucket)
-      //       {
-      //         (*final.m_run)[index++] = empty_element; // fill bucket
-      //         ++added;
-      //         ++total_added;
-      //         if (added == max_bucket_size)
-      //         {
-      //           ++at_bucket;
-      //           added = 0;
-      //         }
-      //       }
-      //
-      //       auto prev_route = dest_tier.m_routing_filter->get_run_index(min_key.m_hash);
-      //       min_key.m_prev_run = prev_route.first;
-      //       min_key.m_prev_index_in_run = prev_route.second;
-      //       auto index_in_array = total_added;
-      //       if (prev_route.first == first_inactive_index)
-      //       {
-      //         index_in_array = prev_route.second;
-      //       }
-      //       dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
-      //
-      //       (*final.m_run)[index++] = min_key;
-      //       ++(final.m_elements_number);
-      //       ++(*vec_it_to_move);
-      //
-      //       ++total_added;
-      //       ++added;
-      //       if (added == max_bucket_size)
-      //       {
-      //         ++at_bucket;
-      //         added = 0;
-      //       }
-      //     }
-      //   }
-      //
-      //   // dest_tier.m_runs.push_back(std::move(final));
-      // }
-
       void merge_runs(std::vector<run> const& sources, tier& dest_tier)
       {
-        // std::vector<std::pair<vec_it, vec_it>> iters;
         size_t total_elements{0};
         HashType min = std::numeric_limits<HashType>::max();
         HashType max = std::numeric_limits<HashType>::min();
-        for (auto& source : sources)
+        for (auto const& source : sources)
         {
           if (min > source.m_min_hash)
           {
@@ -877,13 +699,11 @@ STXXL_BEGIN_NAMESPACE
             max = source.m_max_hash;
           }
 
-          // iters.emplace_back(source.m_run.begin(), source.m_run.end());
           total_elements += source.m_elements_number;
         }
 
         if (!dest_tier.m_routing_filter)
         {
-          // std::cout << "Creating new filter size " << 4 + std::log2(total_elements) << std::endl;
           dest_tier.m_routing_filter.reset(create_routing_filter(total_elements, dest_tier.m_level));
         }
 
@@ -901,10 +721,11 @@ STXXL_BEGIN_NAMESPACE
           return index;
         };
 
-        std::vector<unsigned int> buckets_size(intervals_no, 0);
         run_element min_key;
 
-        for (auto& source : sources)
+#ifdef BOA_SEARCH_VIA_BUCKETS
+        std::vector<unsigned int> buckets_size(intervals_no, 0);
+        for (auto const& source : sources)
         {
           min_key.m_hash = std::numeric_limits<HashType>::max();
           external_vector const& v = source.m_run;
@@ -921,6 +742,7 @@ STXXL_BEGIN_NAMESPACE
         }
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
+#endif
 
         int first_inactive_index = 0;
         for (auto const& run : dest_tier.m_runs)
@@ -936,16 +758,21 @@ STXXL_BEGIN_NAMESPACE
 
         run& final = dest_tier.m_runs[first_inactive_index];
         final.active = true;
+#ifdef BOA_SEARCH_VIA_BUCKETS
         final.m_run_size = max_bucket_size * intervals_no;
         final.m_bucket_size = max_bucket_size;
+#else
+        final.m_run_size = total_elements;
+        final.m_bucket_size = 0;
+#endif
         final.m_max_hash = max;
         final.m_min_hash = min;
         final.m_bucket_interval = interval_size;
         final.m_buckets_no = intervals_no;
         final.m_elements_number = 0;
         // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
-        final.m_run.resize(final.m_run_size, true);
-        std::fill(final.m_run.begin(), final.m_run.end(), empty_element);
+        final.m_run.resize(final.m_run_size);
+        // std::fill(final.m_run.begin(), final.m_run.end(), empty_element);
 
         unsigned int at_bucket{0};
         unsigned int added{0};
@@ -998,11 +825,16 @@ STXXL_BEGIN_NAMESPACE
           }
         }
 
-        // std::make_heap(heap.begin(), heap.end(), ByHash());
+        size_t empty_elements_added{0};
 
         // loop rest items
         while (!heap.empty())
         {
+          if (index >= final.m_run.size())
+          {
+            exit(0);
+          }
+
           // std::pop_heap(heap.begin(), heap.end(), ByHash());
           HeapItem min_item = heap[0];
           int min_index_in_heap = 0;
@@ -1017,10 +849,12 @@ STXXL_BEGIN_NAMESPACE
 
           min_key = min_item.elem;
 
+#ifdef BOA_SEARCH_VIA_BUCKETS
           while (bucket_index(min_key.m_hash) != at_bucket)
           {
-            // (*final.m_run)[index++] = empty_element; // fill bucket
-            index++;
+            final.m_run[index++] = empty_element; // fill bucket
+            // index++;
+            empty_elements_added++;
             ++added;
             ++total_added;
             if (added == max_bucket_size)
@@ -1029,6 +863,7 @@ STXXL_BEGIN_NAMESPACE
               added = 0;
             }
           }
+#endif
 
           auto prev_route = dest_tier.m_routing_filter->get_run_index(min_key.m_hash);
           if (prev_route.first > first_inactive_index)
@@ -1036,26 +871,34 @@ STXXL_BEGIN_NAMESPACE
             prev_route.first = 0;
             prev_route.second = 0;
           }
+          if (prev_route.first > -1)
+          {
+            m_stats.tier_to_collisions[dest_tier.m_level] += 1;
+          }
           min_key.m_prev_run = prev_route.first;
           min_key.m_prev_index_in_run = prev_route.second;
           auto index_in_array = total_added;
-          // if (prev_route.first == first_inactive_index)
-          // {
-          // index_in_array = prev_route.second;
-          // }
+#ifdef BOA_SEARCH_VIA_BUCKETS
+          if (prev_route.first == first_inactive_index)
+          {
+            index_in_array = prev_route.second;
+          }
+#endif
           dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
 
           (final.m_run)[index++] = min_key;
           ++(final.m_elements_number);
 
           ++total_added;
+#ifdef BOA_SEARCH_VIA_BUCKETS
           ++added;
+
           if (added == max_bucket_size)
           {
             ++at_bucket;
             added = 0;
           }
-
+#endif
           HeapItem item;
           bool _added{false};
           for (int j = min_item.index + 1; j < const_sources[min_item.src]->size(); ++j)
@@ -1075,6 +918,17 @@ STXXL_BEGIN_NAMESPACE
             heap.erase(heap.begin() + min_index_in_heap);
           }
         }
+#ifdef BOA_SEARCH_VIA_BUCKETS
+        while (index < final.m_run.size())
+        {
+          final.m_run[index++] = empty_element;
+        }
+#else
+        if (index != final.m_run.size())
+        {
+          exit(0);
+        }
+#endif
       }
     };
   } // namespace boa.
