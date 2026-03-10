@@ -207,7 +207,6 @@ STXXL_BEGIN_NAMESPACE
 
       struct run
       {
-        external_vector m_run;
         unsigned int m_buckets_no{}; // number of buckets in run
         double m_bucket_interval{}; // offset between buckets w.r.t. hash
         size_t m_elements_number{}; // actual elements, not counting padding
@@ -221,9 +220,15 @@ STXXL_BEGIN_NAMESPACE
 
       struct tier
       {
+        external_vector m_run;
         std::vector<run> m_runs;
         std::unique_ptr<routing_filter<HashType, Pages, PageSize, BlockSize>> m_routing_filter;
         uint16_t m_level;
+
+        size_t vector_run_offset(unsigned int run) const
+        {
+          return (m_run.size() / RunsPerTier) * run;
+        }
       };
 
       //! The external memory runs
@@ -349,6 +354,7 @@ STXXL_BEGIN_NAMESPACE
                 }
               } // for (int at = start; at < stop; at++).
 
+              // auto prev = v[run_to_search.second];
               if (prev.m_prev_run != -1 && !visited_runs.contains(prev.m_prev_run))
               {
                 visited_runs.push_unique(prev.m_prev_run);
@@ -359,8 +365,10 @@ STXXL_BEGIN_NAMESPACE
                 run_to_search.first = -1;
               }
 #else
-              external_vector const* v = &(tier.m_runs[run_to_search.first].m_run);
+              external_vector const* v = &(tier.m_run);
+              auto offset = tier.vector_run_offset(run_to_search.first);
               auto prev_run = run_to_search.first;
+
               while (run_to_search.first != -1)
               {
                 ++stats.visited_elements;
@@ -368,10 +376,10 @@ STXXL_BEGIN_NAMESPACE
                 if (prev_run != run_to_search.first)
                 {
                   prev_run = run_to_search.first;
-                  v = &(tier.m_runs[run_to_search.first].m_run);
+                  offset = tier.vector_run_offset(run_to_search.first);
                 }
 
-                auto prev = (*v)[run_to_search.second];
+                auto prev = (*v)[offset + run_to_search.second];
                 if (prev.m_hash == hash && prev.m_key == k)
                 {
                   return std::unique_ptr<element_type>(new element_type(prev.m_key, prev.m_value));
@@ -543,7 +551,8 @@ STXXL_BEGIN_NAMESPACE
         r.m_min_hash = min;
         r.m_elements_number = 0;
         // r.m_run = std::unique_ptr<external_vector>(new external_vector(r.m_run_size));
-        r.m_run.resize(r.m_run_size);
+        m_tiers[0].m_run.resize(r.m_run_size * RunsPerTier);
+        auto offset = m_tiers[0].vector_run_offset(first_inactive_index);
         // std::fill(r.m_run.begin(), r.m_run.end(), empty_element);
         r.m_size = 0;
 
@@ -620,7 +629,7 @@ STXXL_BEGIN_NAMESPACE
           auto index_in_array = index;
           m_tiers[0].m_routing_filter->insert(first_inactive_index, index_in_array, elem.m_hash);
 
-          (r.m_run)[index++] = elem;
+          (m_tiers[0].m_run)[offset + index++] = elem;
           ++r.m_size;
           ++it;
 #endif
@@ -671,7 +680,7 @@ STXXL_BEGIN_NAMESPACE
               m_tiers[new_tier_no].m_runs.push_back(std::move(r));
             }
 
-            merge_runs(m_tiers[tier_no].m_runs, m_tiers[new_tier_no]);
+            merge_runs(m_tiers[tier_no], m_tiers[new_tier_no]);
             for (auto& run : m_tiers[tier_no].m_runs)
             {
               run.active = false;
@@ -683,12 +692,12 @@ STXXL_BEGIN_NAMESPACE
       }
 
       //! merge runs into next tier
-      void merge_runs(std::vector<run> const& sources, tier& dest_tier)
+      void merge_runs(tier const & source_tier, tier& dest_tier)
       {
         size_t total_elements{0};
         HashType min = std::numeric_limits<HashType>::max();
         HashType max = std::numeric_limits<HashType>::min();
-        for (auto const& source : sources)
+        for (auto const& source : source_tier.m_runs)
         {
           if (min > source.m_min_hash)
           {
@@ -771,7 +780,8 @@ STXXL_BEGIN_NAMESPACE
         final.m_buckets_no = intervals_no;
         final.m_elements_number = 0;
         // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
-        final.m_run.resize(final.m_run_size);
+        dest_tier.m_run.resize(final.m_run_size * RunsPerTier);
+        auto offset = dest_tier.vector_run_offset(first_inactive_index);
         // std::fill(final.m_run.begin(), final.m_run.end(), empty_element);
 
         unsigned int at_bucket{0};
@@ -794,23 +804,16 @@ STXXL_BEGIN_NAMESPACE
         };
         // std::priority_queue<HeapItem, std::vector<HeapItem>, ByHash> heap;
         std::vector<HeapItem> heap;
-        heap.reserve(sources.size());
-
-        std::vector<external_vector const*> const_sources;
-        const_sources.resize(sources.size());
-        for (int i = 0; i < sources.size(); ++i)
-        {
-          const_sources[i] = &(sources[i].m_run);
-        }
+        heap.reserve(RunsPerTier);
 
         // add heads in heap
-        for (int i = 0; i < const_sources.size(); ++i)
+        for (int i = 0; i < RunsPerTier; ++i)
         {
           HeapItem item;
 
-          for (int j = 0; j < const_sources[i]->size(); ++j)
+          for (int j = source_tier.vector_run_offset(i); j < source_tier.vector_run_offset(i) + source_tier.m_runs[i].m_run_size; ++j)
           {
-            item.elem = (*const_sources[i])[j];
+            item.elem = source_tier.m_run[j];
             if (item.elem.m_hash == 0)
             {
               continue;
@@ -830,7 +833,7 @@ STXXL_BEGIN_NAMESPACE
         // loop rest items
         while (!heap.empty())
         {
-          if (index >= final.m_run.size())
+          if (index >= final.m_run_size)
           {
             exit(0);
           }
@@ -886,7 +889,7 @@ STXXL_BEGIN_NAMESPACE
 #endif
           dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
 
-          (final.m_run)[index++] = min_key;
+          dest_tier.m_run[offset + index++] = min_key;
           ++(final.m_elements_number);
 
           ++total_added;
@@ -901,9 +904,9 @@ STXXL_BEGIN_NAMESPACE
 #endif
           HeapItem item;
           bool _added{false};
-          for (int j = min_item.index + 1; j < const_sources[min_item.src]->size(); ++j)
+          for (int j = min_item.index + 1; j < source_tier.vector_run_offset(min_item.src) + source_tier.m_runs[min_item.src].m_run_size; ++j)
           {
-            item.elem = (*const_sources[min_item.src])[j];
+            item.elem = source_tier.m_run[j];
             if (item.elem.m_hash != 0)
             {
               item.src = min_item.src;
@@ -924,7 +927,7 @@ STXXL_BEGIN_NAMESPACE
           final.m_run[index++] = empty_element;
         }
 #else
-        if (index != final.m_run.size())
+        if (index != final.m_run_size)
         {
           exit(0);
         }
