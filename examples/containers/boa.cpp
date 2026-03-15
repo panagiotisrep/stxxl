@@ -1,15 +1,9 @@
 //! [example]
 
-#define BOA_PAGES 8
-#define BOA_PAGE_SIZE 1
-#define BOA_BLOCK_SIZE 256*1024
-#define BOA_BUFFER_SIZE 1024
-#define BOA_LAMBDA 16
-
 #include <iostream>
 #include <stxxl/bits/utils/hash.h>
 #include <stxxl/boa>
-#include <stxxl/bits/utils/hash.h>
+#include <stxxl/boa_no_buckets>
 #include <type_traits>
 #include <climits>
 #include <fstream>
@@ -62,107 +56,6 @@ uint64_t HashFunction(uint32_t const& k)
 }
 
 stxxl::stats* Stats;
-
-//
-// int main()
-// {
-// #define SEARCH_
-//   std::vector<unsigned long> data;
-//   int size = 100000;
-//   data.reserve(size);
-//   for (int i = 1; i < size; ++i)
-//   {
-//     data.push_back(i);
-//   }
-//
-//   std::mt19937 gen(12345); // fixed seed
-//   std::shuffle(data.begin(), data.end(), gen);
-//
-//   using clock = std::chrono::high_resolution_clock; // or steady_clock
-//   auto t0 = clock::now();
-//
-//   typedef stxxl::boa::boa<uint32_t, char, uint64_t, HashFunction, HashCompare, 8>
-//     boa_type;
-//
-//   boa_type boa(1024);
-//   boa.print_info();
-//
-//   // generate stats instance
-//   stxxl::stats* Stats = stxxl::stats::get_instance();
-//   // start measurement here
-//   stxxl::stats_data stats_begin(*Stats);
-//
-//   auto start = std::chrono::high_resolution_clock::now();
-//
-//   stxxl::stats_data stats_insert(*Stats);
-//   auto _start = std::chrono::high_resolution_clock::now();
-//   int counter{0};
-//   for (auto d : data)
-//   {
-//     ++counter;
-//     if (counter % 100000 == 0)
-//     {
-//       auto end = std::chrono::high_resolution_clock::now();
-//       std::chrono::duration<double, std::milli> elapsed = end - _start;
-//       std::cout << counter << " " << elapsed.count() << std::endl;
-//       _start = std::chrono::high_resolution_clock::now();
-//     }
-//
-//     boa.insert(std::pair<unsigned long, char>(d, 'a'));
-//   }
-//
-//   std::cout << "Insert\n" << (stxxl::stats_data(*Stats) - stats_insert);
-//
-//   auto end = std::chrono::high_resolution_clock::now();
-//   std::chrono::duration<double, std::milli> elapsed = end - start;
-//   std::cout << "Insert time: " << elapsed.count() << " ms\n";
-//   boa.print_internal_structure();
-//
-//   stxxl::stats_data stats_search(*Stats);
-//   start = std::chrono::high_resolution_clock::now();
-// #ifdef SEARCH_
-//   counter = 0;
-//   for (auto d = data.begin(); d != data.end(); ++d)
-//   {
-//     ++counter;
-//     if (counter % 5000 == 0)
-//     {
-//       auto end = std::chrono::high_resolution_clock::now();
-//       std::chrono::duration<double, std::milli> elapsed = end - _start;
-//       std::cout << counter << " " << elapsed.count() << std::endl;
-//       _start = std::chrono::high_resolution_clock::now();
-//       // break;
-//     }
-//
-//     auto value = boa.find(*d);
-//     if (!value)
-//     {
-//       std::cout << "did not find " << *d << std::endl;
-//       return 0;
-//     }
-//     if (value->first != *d)
-//     {
-//       std::cout << "wrong result for key" << *d << std::endl;
-//       return 0;
-//     }
-//   }
-//
-//   boa.stats.print();
-//
-//   std::cout << "Search\n" << (stxxl::stats_data(*Stats) - stats_search);
-//
-//   end = std::chrono::high_resolution_clock::now();
-//   elapsed = end - start;
-//   std::cout << "Search time: " << elapsed.count() << " ms\n";
-// #endif
-//   std::cout << "Total" << (stxxl::stats_data(*Stats) - stats_begin);
-//
-//   auto t1 = clock::now();
-//   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-//   std::cout << "Elapsed: " << ms << "ms\n";
-//
-//   return 0;
-// }
 
 std::tuple<size_t, size_t, size_t, size_t, size_t, size_t> get_reads_writes(const stxxl::stats_data& src)
 {
@@ -259,44 +152,74 @@ struct ProcIOStats
   }
 };
 
-int main()
-{
+#define BOA_SEARCH_VIA_BUCKETS
+
+// #ifndef BOA_PAGES
+// #define BOA_PAGES 2
+// #endif
+
+#ifndef BOA_PAGE_SIZE
+#define BOA_PAGE_SIZE 1
+#endif
+
+// #ifndef BOA_BLOCK_SIZE
+// #define BOA_BLOCK_SIZE (32*1024)
+// #endif
+
+// #ifndef BOA_BUFFER_SIZE
+// #define BOA_BUFFER_SIZE 1024
+// #endif
+
+// #ifndef BOA_LAMBDA
+// #define BOA_LAMBDA 16
+// #endif
+
 #define IO_DETAILS
-  using KeyType = uint32_t;
-  using clock = std::chrono::high_resolution_clock; // or steady_clock
 
-  const int pages = BOA_PAGES;
-  const int page_size = BOA_PAGE_SIZE;
-  const int block_size = BOA_BLOCK_SIZE;
-  const int buffer_size = BOA_BUFFER_SIZE;
-  const int lambda = BOA_LAMBDA;
+using KeyType = uint32_t;
+const int pages = BOA_PAGES;
+const int page_size = BOA_PAGE_SIZE;
+const int block_size = BOA_BLOCK_SIZE;
+const int lambda = BOA_LAMBDA;
 
-  std::string tmp_filename = "boa_"
-    + std::to_string(page_size)
-    + "_" + std::to_string(pages)
-    + "_" + std::to_string(block_size) + ".txt";
 
-  const std::string filename = get_available_filename(tmp_filename);
-  const int size = 5000000;
-  const int output_every_inserts = 50000;
+const int size = 100000000;
+
+#ifndef BOA_SEARCH_VIA_BUCKETS
+typedef stxxl::boa_no_buckets::boa<
+  KeyType,
+  char,
+  uint64_t,
+  HashFunction,
+  HashCompare,
+  lambda,
+  pages,
+  page_size,
+  block_size
+> boa_type;
+#else
+typedef stxxl::boa::boa<
+  KeyType,
+  char,
+  uint64_t,
+  HashFunction,
+  HashCompare,
+  lambda,
+  pages,
+  page_size,
+  block_size
+> boa_type;
+#endif
+
+const int buffer_size = BOA_BLOCK_SIZE / boa_type::get_element_footprint();
+
+void insertions_then_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda, const int size, const int buffer_size)
+{
+  boa_type boa(buffer_size);
+
+  const int output_every_inserts = 100000;
   const int output_every_queries = 1000;
   const int queries_no = 10000;
-
-  std::ofstream out(filename, std::ios::app);
-  if (!out)
-    throw std::runtime_error("Cannot open results file");
-
-  typedef stxxl::boa::boa<
-    KeyType,
-    char,
-    uint64_t,
-    HashFunction,
-    HashCompare,
-    lambda,
-    pages,
-    page_size,
-    block_size
-  > boa_type;
 
   /**************************** create data *****************************/
   std::vector<KeyType> data;
@@ -308,12 +231,32 @@ int main()
   std::mt19937 gen(12345); // fixed seed
   std::shuffle(data.begin(), data.end(), gen);
 
+  std::string tmp_filename = "boa_";
+#ifdef BOA_SEARCH_VIA_BUCKETS
+	tmp_filename += "buckets_";
+#endif
+	tmp_filename = tmp_filename
+    + std::to_string(page_size)
+    + "_" + std::to_string(pages)
+    + "_" + std::to_string(block_size) + ".txt";
+
+  const std::string filename = get_available_filename(tmp_filename);
+
+  std::ofstream out(filename, std::ios::app);
+  if (!out)
+    throw std::runtime_error("Cannot open results file");
+
   ProcIOStats os_before = ProcIOStats::read_current();
 
   /*************************** start experiment *************************/
-  auto t_start = clock::now();
+  auto t_start = std::chrono::system_clock::now();
 
-  out << "Start"
+	std::string start_msg = "Start";
+#ifdef BOA_SEARCH_VIA_BUCKETS
+	start_msg += " Buckets BOA";
+#endif
+
+  out << ""
     << "\nElements: " << data.size()
     << "\nBuffer: " << buffer_size
     << "\nLambda " << lambda
@@ -322,7 +265,15 @@ int main()
     << "\nBlock size " << block_size
     << "\n";
 
-  boa_type boa(buffer_size);
+  std::cout << "Start"
+    << "\nElements: " << data.size()
+    << "\nBuffer: " << buffer_size
+    << "\nLambda " << lambda
+    << "\nPages " << pages
+    << "\nPage size " << page_size
+    << "\nBlock size " << block_size
+    << "\n";
+
 
   Stats = stxxl::stats::get_instance();
   stxxl::stats_data stats_begin(*Stats);
@@ -357,7 +308,8 @@ int main()
         << "bytes read " << std::get<2>(details) << ", "
         << "writes " << std::get<3>(details) << ", "
         << "cached writes " << std::get<4>(details) << ", "
-        << "bytes written " << std::get<5>(details) << "\n";
+        << "bytes written " << std::get<5>(details) << ", "
+        << "boa size " << boa.get_size_bytes() << "\n";
 #endif
       start_iteration = std::chrono::high_resolution_clock::now();
     }
@@ -368,6 +320,8 @@ int main()
   std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
     t_start_insertions;
   out << "End Insertions, time " << insertions_total.count() << "\n";
+  std::cout << "End Insertions, time " << insertions_total.count() << "\n";
+
   out << (stxxl::stats_data(*Stats) - stats_insert_begin);
 
   /******************************** Queries ***********************************/
@@ -416,12 +370,18 @@ int main()
     if (!value)
     {
       std::cout << "did not find " << d << std::endl;
-      return 0;
+      out << "did not find " << d << std::endl;
+      out.flush();
+      out.close();
+      return;
     }
     if (value->first != d)
     {
       std::cout << "wrong result for key" << d << std::endl;
-      return 0;
+      out << "wrong result for key " << d << std::endl;
+      out.flush();
+      out.close();
+      return;
     }
   }
 
@@ -429,16 +389,18 @@ int main()
 
   std::chrono::duration<double, std::milli> queries_total = std::chrono::high_resolution_clock::now() - t_start_queries;
   out << "End Queries, time " << queries_total.count() << "\n";
+  std::cout << "End Queries, time " << queries_total.count() << "\n";
+
   out << (stxxl::stats_data(*Stats) - stats_queries_begin);
 
   out << "Total\n"
     << (stxxl::stats_data(*Stats) - stats_begin)
-    << std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t_start).count()
+    << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - t_start).count()
     << "\n";
 
   std::cout << "Total\n"
     << (stxxl::stats_data(*Stats) - stats_begin)
-    << std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t_start).count()
+    << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - t_start).count()
     << "\n";
 
   ProcIOStats os_after = ProcIOStats::read_current();
@@ -460,8 +422,196 @@ int main()
 
   std::cout << "Output file [" << filename << "]\n";
   out << "End\n";
+
+  for (auto e : boa.m_stats.tier_to_collisions)
+  {
+    std::cout << "Tier: " << e.first << " collisions: " << e.second << ", runs: " << boa.active_runs(e.first) << "\n";
+  }
   out.flush();
   out.close();
+}
+
+void insertions_with_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
+                                       const int size, const int buffer_size, const int n_insertions_per_batch,
+                                       const int k_queries_per_batch)
+{
+	boa_type boa(buffer_size);
+
+	/**************************** create data *****************************/
+	std::vector<KeyType> data;
+	data.reserve(size);
+	for (int i = 1; i <= size; ++i)
+	{
+		data.push_back(i);
+	}
+	std::mt19937 gen(12345); // fixed seed
+	std::shuffle(data.begin(), data.end(), gen);
+
+	std::string tmp_filename = "boa_interleaved_"
+		+ std::to_string(page_size)
+		+ "_" + std::to_string(pages)
+		+ "_" + std::to_string(block_size) + ".txt";
+
+	const std::string filename = get_available_filename(tmp_filename);
+
+	std::ofstream out(filename, std::ios::app);
+	if (!out)
+		throw std::runtime_error("Cannot open results file");
+
+	ProcIOStats os_before = ProcIOStats::read_current();
+
+	/*************************** start experiment *************************/
+	auto t_start = std::chrono::system_clock::now();
+
+	out << "Start"
+		<< "\nElements: " << data.size()
+		<< "\nBuffer: " << buffer_size
+		<< "\nLambda " << lambda
+		<< "\nPages " << pages
+		<< "\nPage size " << page_size
+		<< "\nBlock size " << block_size
+		<< "\nInsertions per batch: " << n_insertions_per_batch
+		<< "\nQueries per batch: " << k_queries_per_batch
+		<< "\n";
+
+	std::cout << "Start"
+		<< "\nElements: " << data.size()
+		<< "\nBuffer: " << buffer_size
+		<< "\nLambda " << lambda
+		<< "\nPages " << pages
+		<< "\nPage size " << page_size
+		<< "\nBlock size " << block_size
+		<< "\nInsertions per batch: " << n_insertions_per_batch
+		<< "\nQueries per batch: " << k_queries_per_batch
+		<< "\n";
+
+	Stats = stxxl::stats::get_instance();
+	stxxl::stats_data stats_begin(*Stats);
+
+	int total_processed = 0;
+	int batch_no = 0;
+
+	while (total_processed < size)
+	{
+		++batch_no;
+
+		/************************* Combined Insertions and Queries ***************************/
+		stxxl::stats_data stats_begin_batch(*Stats);
+		auto t_start_batch = std::chrono::high_resolution_clock::now();
+
+		int insert_end = std::min(total_processed + n_insertions_per_batch, size);
+		int n_inserted = 0;
+
+		for (int i = total_processed; i < insert_end; ++i)
+		{
+			boa.insert(std::pair<KeyType, char>(data[i], 'a'));
+			++n_inserted;
+		}
+		total_processed = insert_end;
+
+		std::chrono::duration<double, std::milli> insert_elapsed =
+			std::chrono::high_resolution_clock::now() - t_start_batch;
+
+		auto t_start_queries = std::chrono::high_resolution_clock::now();
+
+		int actual_queries = std::min(k_queries_per_batch, total_processed);
+		for (int q = 0; q < actual_queries; ++q)
+		{
+			KeyType const & key = data[rand() % total_processed];
+			auto value = boa.find(key);
+			if (!value || value->first != key)
+			{
+				std::cout << "Batch " << batch_no << ": query error for key " << key << "\n";
+				out << "Batch " << batch_no << ": query error for key " << key << "\n";
+				out.flush();
+				out.close();
+				return;
+			}
+		}
+
+		std::chrono::duration<double, std::milli> queries_elapsed =
+			std::chrono::high_resolution_clock::now() - t_start_queries;
+
+		std::chrono::duration<double, std::milli> batch_elapsed =
+			std::chrono::high_resolution_clock::now() - t_start_batch;
+
+		std::cout << "Batch " << batch_no
+			<< " | Insertions " << n_inserted
+			<< ", Insertions time " << insert_elapsed.count() << " ms"
+			<< ", Queries " << actual_queries
+			<< ", Queries time " << queries_elapsed.count() << " ms"
+			<< ", total time " << batch_elapsed.count() << " ms\n";
+
+#ifndef IO_DETAILS
+		out << "Batch " << batch_no
+			<< " | Insertions " << n_inserted
+			<< ", Queries " << actual_queries
+			<< ", total time " << batch_elapsed.count() << "\n";
+#else
+		auto batch_details = get_reads_writes(stats_begin_batch);
+		out << "Batch " << batch_no
+			<< " | Insertions " << n_inserted
+			<< ", Insertions time " << insert_elapsed.count() << " ms"
+			<< ", Queries " << actual_queries
+			<< ", Queries time " << queries_elapsed.count() << " ms"
+			<< ", total time " << batch_elapsed.count() << ", details: "
+			<< "reads " << std::get<0>(batch_details) << ", "
+			<< "cached_reads " << std::get<1>(batch_details) << ", "
+			<< "bytes read " << std::get<2>(batch_details) << ", "
+			<< "writes " << std::get<3>(batch_details) << ", "
+			<< "cached writes " << std::get<4>(batch_details) << ", "
+			<< "bytes written " << std::get<5>(batch_details) << "\n";
+#endif
+	}
+
+	boa.stats.print();
+
+	out << "Total\n"
+		<< (stxxl::stats_data(*Stats) - stats_begin)
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - t_start).count()
+		<< "\n";
+
+	std::cout << "Total\n"
+		<< (stxxl::stats_data(*Stats) - stats_begin)
+		<< std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - t_start).count()
+		<< "\n";
+
+	ProcIOStats os_after = ProcIOStats::read_current();
+	ProcIOStats os_delta = os_after - os_before;
+
+	std::cout << "OS read_bytes:  " << os_delta.read_bytes << "\n";
+	std::cout << "OS write_bytes: " << os_delta.write_bytes << "\n";
+	std::cout << "OS read syscalls:  " << os_delta.syscr << "\n";
+	std::cout << "OS write syscalls: " << os_delta.syscw << "\n";
+	std::cout << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
+	std::cout << "Tiers no: " << boa.get_tiers_no() << "\n";
+
+	out << "OS read_bytes:  " << os_delta.read_bytes << "\n";
+	out << "OS write_bytes: " << os_delta.write_bytes << "\n";
+	out << "OS read syscalls:  " << os_delta.syscr << "\n";
+	out << "OS write syscalls: " << os_delta.syscw << "\n";
+	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
+	out << "Tiers no: " << boa.get_tiers_no() << "\n";
+
+	std::cout << "Output file [" << filename << "]\n";
+	out << "End\n";
+
+	for (auto e : boa.m_stats.tier_to_collisions)
+	{
+		std::cout << "Tier: " << e.first << " collisions: " << e.second << ", runs: " << boa.active_runs(e.first) <<
+			"\n";
+	}
+	out.flush();
+	out.close();
+}
+
+int main()
+{
+  const int n_insertions_per_batch = 50000;
+  const int k_queries_per_batch = 100;
+
+  insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
+  // insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch, k_queries_per_batch);
 
   return 0;
 }
