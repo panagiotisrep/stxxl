@@ -17,7 +17,7 @@
 #include <stxxl/vector>
 #include <queue>
 
-#define BOA_SEARCH_VIA_BUCKETS
+// #define BOA_SEARCH_VIA_BUCKETS
 
 STXXL_BEGIN_NAMESPACE
   namespace boa
@@ -138,7 +138,7 @@ STXXL_BEGIN_NAMESPACE
         std::unordered_map<int32, size_t> elements_per_tier;
         std::unordered_map<int32, size_t> runs_per_tier;
 
-        void print()
+        void print_details()
         {
           std::cout << "Searches [" << searches
             << "], Visited runs [" << visited_runs
@@ -154,13 +154,35 @@ STXXL_BEGIN_NAMESPACE
               << "]" << std::endl;
           }
         }
+
+        std::string info() const
+        {
+          std::stringstream ss;
+          ss << "Searches [" << searches
+            << "], Visited runs [" << visited_runs
+            << "], Visited total elements [" << visited_elements
+            << "]\n";
+          return ss.str();
+        }
+
+        void reset()
+        {
+          visited_runs = 0;
+          visited_elements = 0;
+          visited_routing_filter = 0;
+          empty_elements = 0;
+          searches = 0;
+          elements_per_tier.clear();
+          runs_per_tier.clear();
+        }
       };
 
       search_stats stats;
 
       size_t max_internal_memory()
       {
-        size_t internal_memory = (m_tiers.size() * (RunsPerTier + 1)) * PageSize * Pages * BlockSize;
+        size_t internal_memory = ((m_tiers.size() * (RunsPerTier + 1))) * PageSize * Pages * BlockSize +
+          3 * PageSize * BlockSize;
         return internal_memory;
       }
 
@@ -330,6 +352,19 @@ STXXL_BEGIN_NAMESPACE
         return total;
       }
 
+      std::string get_structure_info() const
+      {
+        std::stringstream info;
+        int tierNo{0};
+        for (auto const& tier : m_tiers)
+        {
+          info << "tier[" << tierNo << "] runs: " << active_runs(tier)
+            << "\n";
+          tierNo++;
+        }
+        return info.str();
+      }
+
       //! find key-value corresponding to search key
       std::unique_ptr<element_type> find(const KeyType& k)
       {
@@ -460,6 +495,7 @@ STXXL_BEGIN_NAMESPACE
               }
 #else
               external_vector const* v = &(tier.m_runs[run_to_search.first].m_run);
+              ++stats.visited_runs;
               auto const& data_v = m_elements;
               auto prev_run = run_to_search.first;
               while (run_to_search.first != -1)
@@ -470,6 +506,7 @@ STXXL_BEGIN_NAMESPACE
                 {
                   prev_run = run_to_search.first;
                   v = &(tier.m_runs[run_to_search.first].m_run);
+                  ++stats.visited_runs;
                 }
 
                 auto prev = (*v)[run_to_search.second];
@@ -480,10 +517,6 @@ STXXL_BEGIN_NAMESPACE
                   {
                     return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
                   }
-                }
-                if (!visited_runs.contains(prev.m_prev_run))
-                {
-                  visited_runs.push_unique(prev.m_prev_run);
                 }
                 run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
               }
@@ -512,15 +545,9 @@ STXXL_BEGIN_NAMESPACE
       }
 
       //! print runs per tiers
-      void print_internal_structure()
+      void print_internal_structure() const
       {
-        int tierNo{0};
-        for (auto const& tier : m_tiers)
-        {
-          std::cout << "tier[" << tierNo << "] runs: " << tier.m_runs.size()
-            << std::endl;
-          tierNo++;
-        }
+        std::cout << get_structure_info();
       }
 
       void print_info()
@@ -528,16 +555,15 @@ STXXL_BEGIN_NAMESPACE
         std::cout << "Run element size: " << sizeof(run_element) << " bytes." << std::endl;
       }
 
-      int active_runs(unsigned int tier)
+      int active_runs(unsigned int tier) const
       {
         return active_runs(m_tiers[tier]);
       }
 
     private:
-      routing_filter<HashType, Pages, PageSize, BlockSize>* create_routing_filter(
-        uint32_t capacity, uint16_t tier_level = 0)
+      routing_filter<HashType, Pages, PageSize, BlockSize>* create_routing_filter(uint16_t tier_level = 0)
       {
-        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + 0.5);
+        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + 1);
         // auto hl = std::log2(run_size) / std::log2(RunsPerTier);
         // auto l_hl = p
         return new routing_filter<HashType, Pages, PageSize, BlockSize>(run_size);
@@ -551,7 +577,7 @@ STXXL_BEGIN_NAMESPACE
       void init()
       {
         tier t0;
-        t0.m_routing_filter.reset(create_routing_filter(m_in_memory_table_max_size * RunsPerTier));
+        t0.m_routing_filter.reset(create_routing_filter(0));
         m_tiers.push_back(std::move(t0));
         m_tiers[0].m_runs.reserve(RunsPerTier);
 
@@ -575,7 +601,7 @@ STXXL_BEGIN_NAMESPACE
       {
         if (!m_tiers[0].m_routing_filter)
         {
-          m_tiers[0].m_routing_filter.reset(create_routing_filter(m_in_memory_table_max_size * RunsPerTier));
+          m_tiers[0].m_routing_filter.reset(create_routing_filter(0));
         }
 
         // find hashes range [min, max]
@@ -757,7 +783,7 @@ STXXL_BEGIN_NAMESPACE
         compact_tiers();
       }
 
-      int active_runs(tier const& t)
+      int active_runs(tier const& t) const
       {
         int count{0};
         for (auto const& r : t.m_runs)
@@ -826,7 +852,7 @@ STXXL_BEGIN_NAMESPACE
 
         if (!dest_tier.m_routing_filter)
         {
-          dest_tier.m_routing_filter.reset(create_routing_filter(total_elements, dest_tier.m_level));
+          dest_tier.m_routing_filter.reset(create_routing_filter(dest_tier.m_level));
         }
 
         // find buckets info
@@ -992,11 +1018,12 @@ STXXL_BEGIN_NAMESPACE
 #endif
 
           auto prev_route = dest_tier.m_routing_filter->get_run_index(min_key.m_hash);
-          // if (prev_route.first > first_inactive_index)
-          // {
-          //   prev_route.first = 0;
-          //   prev_route.second = 0;
-          // }
+          if (prev_route.first > first_inactive_index)
+          {
+            prev_route.first = 0;
+            prev_route.second = 0;
+            exit(0);
+          }
           if (prev_route.first > -1)
           {
             m_stats.tier_to_collisions[dest_tier.m_level] += 1;

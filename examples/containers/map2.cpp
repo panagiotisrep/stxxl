@@ -128,7 +128,7 @@ struct ProcIOStats
 };
 
 #ifndef DATA_NODE_BLOCK_SIZE
-#define DATA_NODE_BLOCK_SIZE (32 * 1024)
+#define DATA_NODE_BLOCK_SIZE (16 * 1024)
 #endif
 
 #ifndef DATA_LEAF_BLOCK_SIZE
@@ -161,7 +161,39 @@ int main()
     + std::to_string(leaf_block_size) + "_" + std::to_string(leaf_cache) + ".txt";
 
   const std::string filename = get_available_filename(tmp);
-  const int size = 5000000;
+// ... existing code ...
+struct ProcIOStats
+{
+  // ... existing code ...
+};
+
+void print_os_io_stats(std::ostream& os, const ProcIOStats& os_delta, int total_memory_bytes)
+{
+  os << "OS read_bytes:  " << os_delta.read_bytes << "\n";
+  os << "OS write_bytes: " << os_delta.write_bytes << "\n";
+  os << "OS read syscalls:  " << os_delta.syscr << "\n";
+  os << "OS write syscalls: " << os_delta.syscw << "\n";
+  os << "Max internal memory bytes: " << total_memory_bytes << "\n";
+}
+
+#ifndef DATA_NODE_BLOCK_SIZE
+// ... existing code ...
+
+  ProcIOStats os_after = ProcIOStats::read_current();
+  ProcIOStats os_delta = os_after - os_before;
+
+  const int total_memory_bytes = node_cache + leaf_cache;
+  print_os_io_stats(std::cout, os_delta, total_memory_bytes);
+  print_os_io_stats(out, os_delta, total_memory_bytes);
+
+  std::cout << "Output file [" << filename << "]\n";
+  out << "End\n";
+  out.flush();
+  out.close();
+
+  return 0;
+}
+// ... existing code ...const int size = 5000000;
   const int output_every_inserts = 50000;
   const int output_every_queries = 1000;
   const int queries_no = 10000;

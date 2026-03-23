@@ -57,7 +57,7 @@ uint64_t HashFunction(uint32_t const& k)
 
 stxxl::stats* Stats;
 
-std::tuple<size_t, size_t, size_t, size_t, size_t, size_t> get_reads_writes(const stxxl::stats_data& src)
+std::tuple<size_t, size_t, size_t, size_t, size_t, size_t, size_t, size_t> get_reads_writes(const stxxl::stats_data& src)
 {
 	auto delta = (stxxl::stats_data(*Stats) - src);
 	return {
@@ -66,7 +66,9 @@ std::tuple<size_t, size_t, size_t, size_t, size_t, size_t> get_reads_writes(cons
 		delta.get_read_volume(),
 		delta.get_writes(),
 		delta.get_cached_writes(),
-		delta.get_written_volume()
+		delta.get_written_volume(),
+		delta.get_wait_read_time(),
+		delta.get_wait_write_time()
 	};
 }
 
@@ -78,9 +80,9 @@ bool file_exists(const std::string& filename)
 
 std::string get_available_filename(const std::string& base_name)
 {
-	// if original name is free
-	if (!file_exists(base_name))
-		return base_name;
+	// // if original name is free
+	// if (!file_exists(base_name))
+	// 	return base_name;
 
 	// split "boa.txt" → "boa" + ".txt"
 	std::string stem = base_name;
@@ -97,7 +99,7 @@ std::string get_available_filename(const std::string& base_name)
 	while (true)
 	{
 		std::ostringstream candidate;
-		candidate << stem << counter << ext;
+		candidate << stem << "_exp_" << counter << ext;
 
 		if (!file_exists(candidate.str()))
 			return candidate.str();
@@ -158,10 +160,6 @@ struct ProcIOStats
 #define BOA_PAGES 2
 #endif
 
-#ifndef BOA_PAGE_SIZE
-#define BOA_PAGE_SIZE 1
-#endif
-
 #ifndef BOA_BLOCK_SIZE
 #define BOA_BLOCK_SIZE (256*1024)
 #endif
@@ -178,12 +176,13 @@ struct ProcIOStats
 
 using KeyType = uint32_t;
 const int pages = BOA_PAGES;
-const int page_size = BOA_PAGE_SIZE;
+const int page_size = 1;
 const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
 
 
-const int size = 1000000;
+const int size = 200000000;
+#define EXPERIMENTS_NO 1
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
@@ -399,8 +398,6 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 		}
 	}
 
-	boa.stats.print();
-
 	std::chrono::duration<double, std::milli> queries_total = std::chrono::high_resolution_clock::now() -
 		t_start_queries;
 	out << "End Queries, time " << queries_total.count() << "\n";
@@ -532,9 +529,9 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	while (total_processed < size)
 	{
 		++batch_no;
+		stxxl::stats_data stats_begin_batch(*Stats);
 
 		/************************* Combined Insertions and Queries ***************************/
-		stxxl::stats_data stats_begin_batch(*Stats);
 		auto t_start_batch = std::chrono::high_resolution_clock::now();
 
 		int insert_end = std::min(total_processed + n_insertions_per_batch, size);
@@ -547,10 +544,13 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 		}
 		total_processed = insert_end;
 
+		auto batch_insert_details = get_reads_writes(stats_begin_batch);
+
 		std::chrono::duration<double, std::milli> insert_elapsed =
 			std::chrono::high_resolution_clock::now() - t_start_batch;
 
 		auto t_start_queries = std::chrono::high_resolution_clock::now();
+		stxxl::stats_data stats_begin_batch_queries(*Stats);
 
 		int actual_queries = std::min(k_queries_per_batch, total_processed);
 		for (int q = 0; q < actual_queries; ++q)
@@ -566,6 +566,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 				return;
 			}
 		}
+
+		auto batch_query_details = get_reads_writes(stats_begin_batch_queries);
 
 		std::chrono::duration<double, std::milli> queries_elapsed =
 			std::chrono::high_resolution_clock::now() - t_start_queries;
@@ -586,25 +588,37 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			<< ", Queries " << actual_queries
 			<< ", total time " << batch_elapsed.count() << "\n";
 #else
-		auto batch_details = get_reads_writes(stats_begin_batch);
+
 		out << "Batch " << batch_no
 			<< " | Insertions " << n_inserted
 			<< ", Insertions time " << insert_elapsed.count() << " ms"
 			<< ", Queries " << actual_queries
 			<< ", Queries time " << queries_elapsed.count() << " ms"
-			<< ", total time " << batch_elapsed.count() << ", details: "
-			<< "reads " << std::get<0>(batch_details) << ", "
-			<< "cached_reads " << std::get<1>(batch_details) << ", "
-			<< "bytes read " << std::get<2>(batch_details) << ", "
-			<< "writes " << std::get<3>(batch_details) << ", "
-			<< "cached writes " << std::get<4>(batch_details) << ", "
-			<< "bytes written " << std::get<5>(batch_details) << ", "
+			<< ", total time " << batch_elapsed.count() << ", insert details: ["
+			<< "reads " << std::get<0>(batch_insert_details) << ", "
+			<< "cached_reads " << std::get<1>(batch_insert_details) << ", "
+			<< "bytes read " << std::get<2>(batch_insert_details) << ", "
+			<< "writes " << std::get<3>(batch_insert_details) << ", "
+			<< "cached writes " << std::get<4>(batch_insert_details) << ", "
+			<< "bytes written " << std::get<5>(batch_insert_details) << ", "
+			<< "read wait time " << std::get<6>(batch_insert_details) << ", "
+			<< "write wait time " << std::get<7>(batch_insert_details) << "], query details: ["
+			<< "reads " << std::get<0>(batch_query_details) << ", "
+			<< "cached_reads " << std::get<1>(batch_query_details) << ", "
+			<< "bytes read " << std::get<2>(batch_query_details) << ", "
+			<< "writes " << std::get<3>(batch_query_details) << ", "
+			<< "cached writes " << std::get<4>(batch_query_details) << ", "
+			<< "bytes written " << std::get<5>(batch_query_details) << ", "
+			<< "read wait time " << std::get<6>(batch_query_details) << ", "
+			<< "write wait time " << std::get<7>(batch_query_details) << "], "
 			<< "boa size " << boa.get_size_bytes() << ", "
 			<< "merges " << boa.get_merges_occurred() << "\n";
+
+		out << boa.get_structure_info();
+		out << boa.stats.info();
+		boa.stats.reset();
 #endif
 	}
-
-	boa.stats.print();
 
 	out << "Total\n"
 		<< (stxxl::stats_data(*Stats) - stats_begin)
@@ -647,22 +661,20 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 int main()
 {
-	insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
+	for (int i = 0; i < EXPERIMENTS_NO; ++i)
+	{
+		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
-	int n_insertions_per_batch = 50000;
-	int k_queries_per_batch = 500;
-	insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-	                                  k_queries_per_batch);
+		int n_insertions_per_batch = 50000;
+		int k_queries_per_batch = 500;
+		insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+										  k_queries_per_batch);
+	}
 
-	n_insertions_per_batch = 50000;
-	k_queries_per_batch = 500;
-	insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-									  k_queries_per_batch);
-
-	n_insertions_per_batch = 50000;
-	k_queries_per_batch = 50000;
-	insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-									  k_queries_per_batch);
+	// n_insertions_per_batch = 50000;
+	// k_queries_per_batch = 50000;
+	// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+									  // k_queries_per_batch);
 
 	// n_insertions_per_batch = 500;
 	// k_queries_per_batch = 50000;
