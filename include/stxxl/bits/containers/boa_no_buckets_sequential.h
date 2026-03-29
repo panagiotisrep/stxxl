@@ -20,7 +20,7 @@
 // #define BOA_SEARCH_VIA_BUCKETS
 
 STXXL_BEGIN_NAMESPACE
-  namespace boa_no_buckets
+  namespace boa_opt
   {
     typedef int8_t run_index;
     typedef uint32_t index_in_run;

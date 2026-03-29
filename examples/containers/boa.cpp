@@ -1,5 +1,27 @@
 //! [example]
 
+// #ifndef BOA_PAGES
+// #define BOA_PAGES 2
+// #endif
+
+// #ifndef BOA_BLOCK_SIZE
+// #define BOA_BLOCK_SIZE (32*1024)
+// #endif
+
+#ifndef BOA_BUFFER_SIZE
+#define BOA_BUFFER_SIZE 1024
+#endif
+
+// #ifndef BOA_LAMBDA
+// #define BOA_LAMBDA 32
+// #endif
+
+// #define BOA_OPT
+#define EXPERIMENTS_NO 1
+#define IO_DETAILS
+
+// #define ROUTING_FILTER_MULT 1
+
 #include <iostream>
 #include <stxxl/bits/utils/hash.h>
 #include <stxxl/boa>
@@ -154,35 +176,14 @@ struct ProcIOStats
 	}
 };
 
-// #define BOA_OPT
-
-#ifndef BOA_PAGES
-#define BOA_PAGES 2
-#endif
-
-#ifndef BOA_BLOCK_SIZE
-#define BOA_BLOCK_SIZE (256*1024)
-#endif
-
-// #ifndef BOA_BUFFER_SIZE
-// #define BOA_BUFFER_SIZE 1024
-// #endif
-
-#ifndef BOA_LAMBDA
-#define BOA_LAMBDA 32
-#endif
-
-#define IO_DETAILS
-
 using KeyType = uint32_t;
 const int pages = BOA_PAGES;
 const int page_size = 1;
 const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
-
+const double routing_filter_mult = ROUTING_FILTER_MULT;
 
 const int size = 200000000;
-#define EXPERIMENTS_NO 1
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
@@ -210,7 +211,7 @@ typedef stxxl::boa::boa<
 > boa_type;
 #endif
 
-const int buffer_size = BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
+const int buffer_size =  BOA_BUFFER_SIZE;//BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
 
 void insertions_then_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size)
@@ -243,6 +244,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 	tmp_filename = tmp_filename
 		+ std::to_string(lambda)
+		+ "_" + std::to_string(routing_filter_mult).erase(std::to_string(routing_filter_mult).find('.'), 1)
 		+ "_" + std::to_string(pages)
 		+ "_" + std::to_string(block_size) + ".txt";
 
@@ -472,6 +474,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 	tmp_filename = tmp_filename
 		+ std::to_string(lambda)
+		+ "_" + std::to_string(routing_filter_mult).erase(std::to_string(routing_filter_mult).find('.'), 1)
 		+ "_" + std::to_string(pages)
 		+ "_" + std::to_string(block_size)
 		+ "_" + std::to_string(n_insertions_per_batch)
@@ -663,7 +666,7 @@ int main()
 {
 	for (int i = 0; i < EXPERIMENTS_NO; ++i)
 	{
-		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
+		// insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
 		int n_insertions_per_batch = 50000;
 		int k_queries_per_batch = 500;

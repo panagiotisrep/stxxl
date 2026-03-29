@@ -17,6 +17,8 @@
 #include <stxxl/vector>
 #include <queue>
 
+// #define ROUTING_FILTER_MULT 1
+
 STXXL_BEGIN_NAMESPACE
   namespace boa_opt
   {
@@ -505,7 +507,7 @@ STXXL_BEGIN_NAMESPACE
 
       size_t routing_filter_entries_for_level(uint16_t tier_level = 0)
       {
-        size_t run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + 1);
+        size_t run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + ROUTING_FILTER_MULT);
         return run_size;
       }
 
