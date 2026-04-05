@@ -617,9 +617,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			<< "boa size " << boa.get_size_bytes() << ", "
 			<< "merges " << boa.get_merges_occurred() << "\n";
 
+#ifndef BOA_OPT
 		out << boa.get_structure_info();
 		out << boa.stats.info();
 		boa.stats.reset();
+#endif
 #endif
 	}
 

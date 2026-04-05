@@ -189,6 +189,19 @@ STXXL_BEGIN_NAMESPACE
         return internal_memory;
       }
 
+      std::string get_structure_info() const
+      {
+        std::stringstream info;
+        int tierNo{0};
+        for (auto const& tier : m_tiers)
+        {
+          info << "tier[" << tierNo << "] runs: " << active_runs(tier)
+            << "\n";
+          tierNo++;
+        }
+        return info.str();
+      }
+
       static size_t get_element_footprint()
       {
         return sizeof(data_element) +
@@ -282,7 +295,7 @@ STXXL_BEGIN_NAMESPACE
 
       external_vector m_run;
       external_data_vector m_elements;
-      std::unique_ptr<routing_filter<HashType, Pages, PageSize, BlockSize>> m_routing_filter;
+      std::unique_ptr<routing_filter<HashType, 4, PageSize, BlockSize>> m_routing_filter;
 
       struct tier
       {
@@ -514,7 +527,7 @@ STXXL_BEGIN_NAMESPACE
       //! initialize the lsm tree
       void init()
       {
-        m_routing_filter.reset(new routing_filter<HashType, RunsPerTier, PageSize, BlockSize>());
+        m_routing_filter.reset(new routing_filter<HashType, 4, PageSize, BlockSize>());
         m_routing_filter->add_tier(routing_filter_entries_for_level(0));
         m_stats.tier_to_collisions[0] = 0;
 
