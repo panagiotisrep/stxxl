@@ -832,13 +832,15 @@ STXXL_BEGIN_NAMESPACE
         auto final_layout = compute_layout_for_lazy_insertion_log();
 
         for (auto tier_layout : final_layout) {
+          m_routing_filter->reset(tier_layout.first);
+
           for (int at_run=0 ; at_run <= tier_layout.second ; at_run++) {
             if (m_tiers[tier_layout.first].m_runs[at_run].active) {
               std::cout << "Error: Tier " << tier_layout.first << " run " << at_run << " is active" << std::endl;
               throw std::runtime_error("Error: Tier run is active");
             }
 
-            m_tiers[tier_layout.first].m_dirty_routing_filter = true;
+            // m_tiers[tier_layout.first].m_dirty_routing_filter = true;
 
             unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                  RunsPerTier, tier_layout.first);
@@ -858,7 +860,19 @@ STXXL_BEGIN_NAMESPACE
 
             auto target_run_offset = get_run_offset(tier_layout.first, at_run);
             for (int i=0 ; i <final.m_run_size ; i++) {
-              m_run[target_run_offset + i] = log[total_moved_elements++];
+              auto elem = log[total_moved_elements++];
+
+              auto prev_route = m_routing_filter->get_run_index(elem.m_hash, tier_layout.first);
+              if (prev_route.first > at_run)
+              {
+                prev_route.first = 0;
+                prev_route.second = 0;
+              }
+              elem.m_prev_run = prev_route.first;
+              elem.m_prev_index_in_run = prev_route.second;
+              m_routing_filter->insert(at_run, i, tier_layout.first, elem.m_hash);
+
+              m_run[target_run_offset + i] = elem;
             }
           }
         } // for (auto tier_layout : final_layout).
@@ -875,7 +889,7 @@ STXXL_BEGIN_NAMESPACE
         auto moved_from_log = make_space_for_new_inserts(new_space);
         flush_from_log(moved_from_log);
         m_lazy_insertion_log.clear();
-        update_routing_filters();
+        // update_routing_filters();
       }
 
       void lazy_insert_impl(element_type const &value) {
