@@ -234,7 +234,13 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	std::shuffle(data.begin(), data.end(), gen);
 
 #ifdef BOA_OPT
+
+#ifdef STATIC_MODE
+	std::string tmp_filename = "boa_opt_static_";
+#else
 	std::string tmp_filename = "boa_opt_";
+#endif
+
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
 	std::string tmp_filename = "boa_buckets_";
@@ -261,7 +267,13 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	auto t_start = std::chrono::system_clock::now();
 
 #ifdef BOA_OPT
+
+#ifdef STATIC_MODE
+	std::string start_msg = "Start BOA OPT STATIC";
+#else
 	std::string start_msg = "Start BOA OPT";
+#endif
+
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
 	std::string start_msg = "Start BOA BUCKETS";
