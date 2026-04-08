@@ -289,8 +289,6 @@ STXXL_BEGIN_NAMESPACE
         unsigned int m_buckets_no{}; // number of buckets in run
         double m_bucket_interval{}; // offset between buckets w.r.t. hash
         size_t m_elements_number{}; // actual elements, not counting padding
-        HashType m_min_hash;
-        HashType m_max_hash;
         unsigned int m_run_size{};
         unsigned int m_bucket_size{}; // elements per bucket
         bool active{false};

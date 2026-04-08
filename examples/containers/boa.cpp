@@ -17,6 +17,7 @@
 // #endif
 
 // #define BOA_OPT
+// #define STATIC_MODE
 #define EXPERIMENTS_NO 1
 #define IO_DETAILS
 
@@ -301,6 +302,11 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out << "Start Insertions\n";
 
 	auto start_iteration = std::chrono::high_resolution_clock::now();
+
+#ifdef STATIC_MODE
+	boa.reserve_lazy_space_for_elements(size);
+#endif
+
 	int counter{0};
 	for (auto d : data)
 	{
@@ -328,9 +334,16 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 			boa.reset_merges_occurred();
 			start_iteration = std::chrono::high_resolution_clock::now();
 		}
-
+#ifdef STATIC_MODE
+		boa.lazy_insert(std::pair<unsigned long, char>(d, 'a'));
+#else
 		boa.insert(std::pair<unsigned long, char>(d, 'a'));
+#endif
 	}
+
+#ifdef STATIC_MODE
+	boa.consolidate_structure();
+#endif
 
 	std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
 		t_start_insertions;
@@ -668,12 +681,12 @@ int main()
 {
 	for (int i = 0; i < EXPERIMENTS_NO; ++i)
 	{
-		// insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
+		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
 		int n_insertions_per_batch = 50000;
 		int k_queries_per_batch = 500;
-		insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-										  k_queries_per_batch);
+		// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+										  // k_queries_per_batch);
 	}
 
 	// n_insertions_per_batch = 50000;

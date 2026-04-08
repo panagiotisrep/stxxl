@@ -5,6 +5,8 @@
 #ifndef BOA_NO_BUCKETS_H
 #define BOA_H
 
+#include <chrono>
+
 #include "stxxl/bits/stream/sort_stream.h"
 #include "stxxl/bits/stream/stream.h"
 
@@ -282,19 +284,14 @@ STXXL_BEGIN_NAMESPACE
 
       struct run
       {
-        unsigned int m_buckets_no{}; // number of buckets in run
-        double m_bucket_interval{}; // offset between buckets w.r.t. hash
         size_t m_elements_number{}; // actual elements, not counting padding
-        HashType m_min_hash;
-        HashType m_max_hash;
         unsigned int m_run_size{};
-        unsigned int m_bucket_size{}; // elements per bucket
         bool active{false};
-        size_t m_size{0};
       };
 
       external_vector m_run;
       external_data_vector m_elements;
+      external_vector m_lazy_insertion_log;
       std::unique_ptr<routing_filter<HashType, 4, PageSize, BlockSize>> m_routing_filter;
 
       struct tier
@@ -302,6 +299,7 @@ STXXL_BEGIN_NAMESPACE
         // external_vector m_run;
         std::vector<run> m_runs;
         uint16_t m_level{0};
+        bool m_dirty_routing_filter{false};
 
         size_t vector_run_offset(unsigned int run) const
         {
@@ -355,6 +353,14 @@ STXXL_BEGIN_NAMESPACE
         }
       }
 
+      void lazy_insert(const element_type& value) {
+        lazy_insert_impl(value);
+      }
+
+      void consolidate_structure() {
+        flush_to_boa_impl();
+      }
+
       //! get number of elements in all tiers
       uint64 size() const
       {
@@ -377,21 +383,6 @@ STXXL_BEGIN_NAMESPACE
         hash = HashFunction(k);
 
         //check external-memory
-        auto bucket_index = [](HashType const& h, run const& r)
-        {
-          if (h - r.m_min_hash < 0)
-          {
-            return 0;
-          }
-          auto index = static_cast<int>(static_cast<double>((h - r.m_min_hash)) / r.m_bucket_interval);
-          // ensure max value falls in the last interval
-          if (index >= r.m_buckets_no)
-          {
-            index = r.m_buckets_no - 1;
-          }
-          return index;
-        };
-
         int at_tier{-1};
         for (auto const& tier : m_tiers)
         {
@@ -489,6 +480,11 @@ STXXL_BEGIN_NAMESPACE
         }
       }
 
+      void reserve_lazy_space_for_elements(size_t size) {
+        m_lazy_insertion_log.reserve(size);
+        m_elements.reserve(size);
+      }
+
       void print_info()
       {
         std::cout << "Run element size: " << sizeof(run_element) << " bytes." << std::endl;
@@ -517,6 +513,382 @@ STXXL_BEGIN_NAMESPACE
       //   // run_size * pow(RunsPerTier, tier_level) + tier_level
       //   // ); //22
       // }
+
+      void minor_flush_to_log_vector() {
+        // TODO does this help stxxl sort?
+        std::sort(m_in_memory_table.begin(), m_in_memory_table.end(), [](cache_element const& a, cache_element const& b)
+        {
+          HashCompare cmp{};
+          return cmp(a.first, b.first);
+        });
+
+        // if (m_elements.size() < get_vector_size_for_n_tiers(0))
+        // {
+          // m_elements.resize(get_vector_size_for_n_tiers(0)); // TODO this will also need resize
+        // }
+
+        for (auto& item : m_in_memory_table)
+        {
+          run_element elem;
+          data_element data_elem;
+          elem.m_hash = item.first;
+          elem.m_data_vector_index = m_elements_in_external_memory++;
+          data_elem.m_key = item.second.first;
+          data_elem.m_value = item.second.second;
+
+          m_lazy_insertion_log.push_back(elem);
+          // m_elements[elem.m_data_vector_index] = data_elem;
+          m_elements.push_back(data_elem);
+        }
+      }
+
+      void sort_vector(typename external_vector::iterator it_begin, typename external_vector::iterator it_end) {
+        struct my_less
+        {
+          typedef run_element value_type;
+          bool operator() (const value_type & a, const value_type & b) const
+          {
+            return a.m_hash < b.m_hash;
+          }
+          value_type min_value() const { value_type v; v.m_hash = std::numeric_limits<HashType>::min(); return v;};
+          value_type max_value() const { value_type v; v.m_hash = std::numeric_limits<HashType>::max(); return v; };
+        };
+
+        std::cout << "Sorting lazy insertion log" << std::endl;
+        std::cout << "Log size: " << m_lazy_insertion_log.size() << std::endl;
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        stxxl::sort<BlockSize>(it_begin,
+                          it_end,
+                               my_less(),
+                               256 * 1024 * 1024,
+                               stxxl::RC());
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "Sort completed in " << duration.count() << " milliseconds" << std::endl;
+      }
+
+      /**
+       * If in empty boa, how would it be after insertions
+       * @return tier, run where tier max tier reached, run max run in last tier
+       */
+      std::pair<unsigned int, unsigned int> compute_space_for_lazy_insertion_log() {
+        unsigned int max_tier{0};
+        unsigned int max_run{0};
+
+        unsigned int first_tier_runs = m_lazy_insertion_log.size() / m_in_memory_table_max_size;
+        while (first_tier_runs > pow(RunsPerTier, max_tier+1)) {
+          ++max_tier;
+        }
+
+        unsigned int first_tier_runs_per_max_tier_run = pow(RunsPerTier, max_tier);
+        max_run = (first_tier_runs / first_tier_runs_per_max_tier_run) - 1;
+
+        return std::make_pair(max_tier, max_run);
+      }
+
+      std::map<unsigned int, unsigned int> compute_layout_for_lazy_insertion_log() {
+        std::map<unsigned int, unsigned int> tier_to_max_run;
+        unsigned int first_tier_runs = m_lazy_insertion_log.size() / m_in_memory_table_max_size;
+
+        while (first_tier_runs > 0) {
+          unsigned int max_tier{0};
+          unsigned int max_run{0};
+          while (first_tier_runs > pow(RunsPerTier, max_tier+1)) {
+            ++max_tier;
+          }
+          unsigned int first_tier_runs_per_max_tier_run = pow(RunsPerTier, max_tier);
+          max_run = (first_tier_runs / first_tier_runs_per_max_tier_run) - 1;
+          tier_to_max_run[max_tier] = max_run;
+
+          first_tier_runs -= (max_run + 1) * pow(RunsPerTier, max_tier);
+        }
+
+        return tier_to_max_run;
+      }
+
+
+      bool empty_run_in_tier(unsigned int tier) {
+        if (m_tiers[tier].m_runs.size() < RunsPerTier) {
+          return true;
+        }
+
+        for (auto const & run : m_tiers[tier].m_runs) {
+          if (!run.active) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      struct move {
+        unsigned int m_from_tier{0};
+        unsigned int m_to_tier{0};
+        unsigned int m_from_run{0};
+
+        move(unsigned int from_tier, unsigned int to_tier, unsigned int from_run) : m_from_run(from_run),
+        m_from_tier(from_tier), m_to_tier(to_tier) {}
+        
+      };
+
+      std::vector<move> compute_old_elements_moves(std::pair<unsigned int, unsigned int> const & new_space) {
+        std::vector<move> existing_moves;
+
+        unsigned int new_space_tier = new_space.first, new_space_run = new_space.second;
+
+        for (auto const & tier : m_tiers) {
+          if (tier.m_level < new_space_tier) {
+            for (int r=0 ; r < tier.m_runs.size() ; r++) {
+              if (tier.m_runs[r].active) {
+                existing_moves.push_back({tier.m_level, tier.m_level, r});
+              }
+            }
+          }
+          else if (tier.m_level == new_space_tier) {
+            auto existing_runs = active_runs(tier);
+            auto total_runs = new_space_run + 1 + existing_runs;
+
+            if (total_runs > RunsPerTier) {
+              for (int r=0 ; r < tier.m_runs.size() ; r++) {
+                if (tier.m_runs[r].active) {
+                  existing_moves.push_back({tier.m_level, tier.m_level, r});
+                  --total_runs;
+                }
+                if (total_runs == RunsPerTier) {
+                  break;
+                }
+              }
+            }
+          } // else if (tier.m_level == new_space_tier).
+          else {
+            break;
+          }
+        } // for (auto const & tier : m_tiers).
+
+        if (existing_moves.empty()) {
+          return {};
+        }
+
+        unsigned int existing_elements_tier_dest = existing_moves.back().m_from_tier + 1;
+        if (existing_elements_tier_dest <= new_space_tier) {
+          existing_elements_tier_dest = new_space_run + 1 < RunsPerTier ? new_space_tier : new_space_tier + 1;
+        }
+
+        for (auto & move : existing_moves) {
+          move.m_to_tier = existing_elements_tier_dest;
+        }
+
+        return existing_moves;
+      }
+
+      int first_non_active_run_in_tier(unsigned int tier) {
+        for (int r=0 ; r < m_tiers[tier].m_runs.size() ; r++) {
+          if (!m_tiers[tier].m_runs[r].active) {
+            return r;
+          }
+        }
+
+        return -1;
+      }
+
+      /**
+       *
+       * @param moves
+       * @return #moved elements from log
+       */
+      unsigned int move_old_elements(std::vector<move> const & moves) {
+        unsigned int target_tier = moves.back().m_to_tier;
+        if (m_tiers.size() <= target_tier)
+        {
+          m_routing_filter->add_tier(routing_filter_entries_for_level(target_tier));
+          m_tiers.push_back(tier());
+          m_tiers[target_tier].m_runs.reserve(RunsPerTier);
+          m_tiers[target_tier].m_level = target_tier;
+          m_stats.tier_to_collisions[target_tier] = 0;
+        }
+        if (m_tiers[target_tier].m_runs.size() < RunsPerTier)
+        {
+          run r;
+          m_tiers[target_tier].m_runs.push_back(std::move(r));
+        }
+
+        unsigned int old_elements{0};
+        for (auto const & move : moves) {
+          old_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size;
+        }
+        unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
+                                            RunsPerTier, target_tier);
+        if (m_lazy_insertion_log.size() + old_elements < target_tier_run_size) {
+          std::cout << "Error: Lazy insertion log size (" << m_lazy_insertion_log.size() << ") + old elements (" <<
+              old_elements << ") is less than target tier run size (" << target_tier_run_size << ")" << std::endl;
+          throw std::runtime_error("Error: Lazy insertion log size + old elements is less than target tier run size");
+        }
+
+        auto target_run = first_non_active_run_in_tier(target_tier);
+        if (target_run == -1) {
+          std::cout << "Error: No non-active run in target tier" << std::endl;
+          throw std::runtime_error("Error: No non-active run in target tier");
+        }
+
+        run& final = m_tiers[target_tier].m_runs[target_run];
+        final.active = true;
+        final.m_run_size = target_tier_run_size;
+        final.m_elements_number = target_tier_run_size;
+
+        // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
+        if (m_run.size() < get_vector_size_for_n_tiers(target_tier))
+        {
+          m_run.resize(get_vector_size_for_n_tiers(target_tier));
+        }
+        if (m_elements.size() < get_vector_size_for_n_tiers(target_tier))
+        {
+          m_elements.resize(get_vector_size_for_n_tiers(target_tier));
+        }
+        auto target_run_offset = get_run_offset(target_tier, target_run);
+
+        unsigned int moved_elements{0};
+        for (auto const & move : moves) {
+          auto offset = get_run_offset(move.m_from_tier, move.m_from_run);
+          auto const & run = m_run;
+
+          for (int i=0 ; i < m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size ; i++) {
+            m_run[target_run_offset + moved_elements] = run[offset + i];
+            ++moved_elements;
+          }
+
+          m_tiers[move.m_from_tier].m_runs[move.m_from_run].active = false;
+        }
+
+        auto const v = m_lazy_insertion_log;
+        unsigned int moved_elements_from_log = target_tier_run_size - moved_elements;
+        while (moved_elements < target_tier_run_size) {
+          m_run[target_run_offset + moved_elements] = v[moved_elements];
+          ++moved_elements;
+        }
+
+        auto it_begin = m_run.begin() + target_run_offset;
+        auto it_end = m_run.begin() + target_run_offset + moved_elements;
+        sort_vector(it_begin, it_end);
+
+        return moved_elements_from_log;
+      }
+
+
+      /**
+       *
+       * @return #moved items from log
+       */
+      unsigned int make_space_for_new_inserts(std::pair<unsigned int, unsigned int> new_space) {
+        auto old_elements_moves = compute_old_elements_moves(new_space);
+        auto moved_elements = 0;
+
+        if (!old_elements_moves.empty()) {
+          moved_elements = move_old_elements(old_elements_moves);
+        }
+
+        auto highest_tier = new_space.first;
+        auto last_run = new_space.second;
+
+        for (int at_tier=0 ; at_tier <= highest_tier ; at_tier++) {
+          if (m_tiers.size() <= at_tier)
+          {
+            m_routing_filter->add_tier(routing_filter_entries_for_level(at_tier));
+            m_tiers.push_back(tier());
+            m_tiers[at_tier].m_runs.reserve(RunsPerTier);
+            m_tiers[at_tier].m_level = at_tier;
+            m_stats.tier_to_collisions[at_tier] = 0;
+          }
+
+          unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
+                                  RunsPerTier, at_tier);
+          unsigned int till_run = at_tier == highest_tier ? last_run : RunsPerTier - 1;
+          while (m_tiers[at_tier].m_runs.size() < till_run + 1)
+          {
+            run r;
+            r.m_run_size = target_tier_run_size;
+            r.m_elements_number = target_tier_run_size;
+            m_tiers[at_tier].m_runs.push_back(std::move(r));
+          }
+
+          if (m_run.size() < get_vector_size_for_n_tiers(at_tier))
+          {
+            m_run.resize(get_vector_size_for_n_tiers(at_tier));
+          }
+          if (m_elements.size() < get_vector_size_for_n_tiers(at_tier))
+          {
+            m_elements.resize(get_vector_size_for_n_tiers(at_tier));
+          }
+        }
+
+        return moved_elements;
+      }
+
+      void flush_from_log(unsigned int moved_first_elements) {
+        unsigned int total_moved_elements = moved_first_elements;
+        auto const log = m_lazy_insertion_log;
+        auto final_layout = compute_layout_for_lazy_insertion_log();
+
+        for (auto tier_layout : final_layout) {
+          for (int at_run=0 ; at_run <= tier_layout.second ; at_run++) {
+            if (m_tiers[tier_layout.first].m_runs[at_run].active) {
+              std::cout << "Error: Tier " << tier_layout.first << " run " << at_run << " is active" << std::endl;
+              throw std::runtime_error("Error: Tier run is active");
+            }
+
+            m_tiers[tier_layout.first].m_dirty_routing_filter = true;
+
+            unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
+                                 RunsPerTier, tier_layout.first);
+            run& final = m_tiers[tier_layout.first].m_runs[at_run];
+            final.active = true;
+            final.m_run_size = target_tier_run_size;
+            final.m_elements_number = target_tier_run_size;
+
+            if (m_run.size() < get_vector_size_for_n_tiers(tier_layout.first))
+            {
+              m_run.resize(get_vector_size_for_n_tiers(tier_layout.first));
+            }
+            if (m_elements.size() < get_vector_size_for_n_tiers(tier_layout.first))
+            {
+              m_elements.resize(get_vector_size_for_n_tiers(tier_layout.first));
+            }
+
+            auto target_run_offset = get_run_offset(tier_layout.first, at_run);
+            for (int i=0 ; i <final.m_run_size ; i++) {
+              m_run[target_run_offset + i] = log[total_moved_elements++];
+            }
+          }
+        } // for (auto tier_layout : final_layout).
+
+        if (total_moved_elements != log.size()) {
+          std::cout << "Error: total moved elements (" << total_moved_elements << ") != log size (" << log.size() << ")" << std::endl;
+          throw std::runtime_error("Error: total moved elements != log size");
+        }
+      }
+
+      void flush_to_boa_impl() {
+        sort_vector(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
+        auto new_space = compute_space_for_lazy_insertion_log();
+        auto moved_from_log = make_space_for_new_inserts(new_space);
+        flush_from_log(moved_from_log);
+        m_lazy_insertion_log.clear();
+        update_routing_filters();
+      }
+
+      void lazy_insert_impl(element_type const &value) {
+        HashType hash;
+        hash = HashFunction(value.first);
+        m_in_memory_table.push_back({hash, value});
+
+        if (m_in_memory_table.size() >= m_in_memory_table_max_size)
+        {
+          minor_flush_to_log_vector();
+          m_in_memory_table.clear();
+        }
+      }
 
       size_t routing_filter_entries_for_level(uint16_t tier_level = 0)
       {
@@ -554,26 +926,12 @@ STXXL_BEGIN_NAMESPACE
       void minor_flush()
       {
         // find hashes range [min, max]
-        HashType min = std::numeric_limits<HashType>::max();
-        HashType max = std::numeric_limits<HashType>::min();
-
         std::sort(m_in_memory_table.begin(), m_in_memory_table.end(), [](cache_element const& a, cache_element const& b)
         {
           HashCompare cmp{};
           return cmp(a.first, b.first);
         });
 
-        for (auto const& pair : m_in_memory_table)
-        {
-          if (pair.first > max)
-          {
-            max = pair.first;
-          }
-          if (pair.first < min)
-          {
-            min = pair.first;
-          }
-        }
 
         // init run and flush elements
         int first_inactive_index = 0;
@@ -592,9 +950,6 @@ STXXL_BEGIN_NAMESPACE
         run& r = m_tiers[0].m_runs[first_inactive_index];
         r.active = true;
         r.m_run_size = m_in_memory_table.size();
-        r.m_bucket_size = 0;
-        r.m_max_hash = max;
-        r.m_min_hash = min;
         r.m_elements_number = 0;
         // r.m_run = std::unique_ptr<external_vector>(new external_vector(r.m_run_size));
         if (m_run.size() < get_vector_size_for_n_tiers(0))
@@ -606,9 +961,6 @@ STXXL_BEGIN_NAMESPACE
           m_elements.resize(get_vector_size_for_n_tiers(0));
         }
         auto offset = get_run_offset(0, first_inactive_index);
-        // std::fill(r.m_run.begin(), r.m_run.end(), empty_element);
-        r.m_size = 0;
-
         int at_bucket{0};
         unsigned int added{0};
 
@@ -646,7 +998,6 @@ STXXL_BEGIN_NAMESPACE
           m_run[offset + index++] = elem;
           m_elements[elem.m_data_vector_index] = data_elem;
 
-          ++r.m_size;
           ++it;
         } // while (it != m_in_memory_table.end()).
         // m_tiers[0].m_runs.push_back(std::move(r));
@@ -712,36 +1063,13 @@ STXXL_BEGIN_NAMESPACE
       void merge_runs(tier const& source_tier, tier& dest_tier)
       {
         size_t total_elements{0};
-        HashType min = std::numeric_limits<HashType>::max();
-        HashType max = std::numeric_limits<HashType>::min();
+
         for (auto const& source : source_tier.m_runs)
         {
-          if (min > source.m_min_hash)
-          {
-            min = source.m_min_hash;
-          }
-          if (max < source.m_max_hash)
-          {
-            max = source.m_max_hash;
-          }
-
           total_elements += source.m_elements_number;
         }
 
         // find buckets info
-        const unsigned int intervals_no = get_buckets_no(total_elements);
-        const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
-        auto bucket_index = [&interval_size, &min, &intervals_no](HashType const& h)
-        {
-          auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
-          // ensure max value falls in the last interval
-          if (index >= intervals_no)
-          {
-            index = intervals_no - 1;
-          }
-          return index;
-        };
-
         run_element min_key;
 
         int first_inactive_index = 0;
@@ -759,11 +1087,6 @@ STXXL_BEGIN_NAMESPACE
         run& final = dest_tier.m_runs[first_inactive_index];
         final.active = true;
         final.m_run_size = total_elements;
-        final.m_bucket_size = 0;
-        final.m_max_hash = max;
-        final.m_min_hash = min;
-        final.m_bucket_interval = interval_size;
-        final.m_buckets_no = intervals_no;
         final.m_elements_number = 0;
         // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
         if (m_run.size() < get_vector_size_for_n_tiers(dest_tier.m_level))
@@ -893,6 +1216,46 @@ STXXL_BEGIN_NAMESPACE
         {
           exit(0);
         }
+      }
+
+      void update_routing_filters() {
+        for (auto& t : m_tiers) {
+          if (t.m_dirty_routing_filter) {
+            m_routing_filter->reset(t.m_level);
+            update_routing_filter(t);
+            t.m_dirty_routing_filter = false;
+          }
+        }
+      }
+
+      void update_routing_filter(tier& t)
+      {
+        for (int r=0 ; r<RunsPerTier ; ++r) {
+          auto const& run = t.m_runs[r];
+          if (!run.active) {
+            continue;
+          }
+
+          auto offset = get_run_offset(t.m_level, r);
+
+          for (int i=0 ; i<run.m_run_size ; ++i) {
+            auto elem = m_run[offset + i];
+
+            auto prev_route = m_routing_filter->get_run_index(elem.m_hash, t.m_level);
+            if (prev_route.first > r)
+            {
+              prev_route.first = 0;
+              prev_route.second = 0;
+            }
+            elem.m_prev_run = prev_route.first;
+            elem.m_prev_index_in_run = prev_route.second;
+            m_routing_filter->insert(r, i, t.m_level, elem.m_hash);
+
+            m_run[offset + i] = elem;
+          }
+
+        } // for (int r=0 ; r<RunsPerTier ; ++r).
+
       }
     };
   } // namespace boa.
