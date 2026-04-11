@@ -554,28 +554,28 @@ STXXL_BEGIN_NAMESPACE
           // m_elements.resize(get_vector_size_for_n_tiers(0)); // TODO this will also need resize
         // }
 
+        data_element data_elem;
+        lazy_run_element elem;
         for (auto& item : m_in_memory_table)
         {
           auto pos = m_elements_in_external_memory++;
-          data_element data_elem;
           data_elem.m_key = item.second.first;
           data_elem.m_value = item.second.second;
 
 #ifdef  IN_MEMORY_SORT
-          m_in_memory_lazy_table.push_back(std::make_pair(pos, item));
+          m_in_memory_lazy_table.push_back(std::make_pair(pos, std::move(item)));
 #else
-          lazy_run_element elem;
           elem.m_hash = item.first;
           elem.m_data_vector_index = pos;
 
           m_lazy_insertion_log.push_back(elem);
 #endif
-          if (pos >= m_elements.size()) {
-            m_elements.push_back(data_elem);
-          }
-          else {
-            m_elements[pos] = data_elem;
-          }
+          // if (pos >= m_elements.size()) {
+          //   m_elements.push_back(data_elem);
+          // }
+          // else {
+          //   m_elements[pos] = data_elem;
+          // }
         }
       }
 

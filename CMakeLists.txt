@@ -549,7 +549,7 @@ configure_file(${PROJECT_SOURCE_DIR}/include/stxxl/bits/config.h.in ${PROJECT_BI
 set(STXXL_CXX_FLAGS ${OpenMP_CXX_FLAGS})
 
 # globally adds top-level include directories
-set(STXXL_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/extern/ips2ra/include ${PROJECT_SOURCE_DIR}/include/ ${PROJECT_BINARY_DIR}/include/)
+set(STXXL_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/extern/util/include ${PROJECT_SOURCE_DIR}/extern/ips2ra/include ${PROJECT_SOURCE_DIR}/include/ ${PROJECT_BINARY_DIR}/include/)
 include_directories(${STXXL_INCLUDE_DIRS})
 
 set(TLX_INSTALL_INCLUDE_DIR tlx CACHE PATH "Workaround for TLX breaking the first cmake call")
