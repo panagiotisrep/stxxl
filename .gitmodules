@@ -1,0 +1,3 @@
+[submodule "extern/ips2ra"]
+	path = extern/ips2ra
+	url = git@github.com:ips4o/ips2ra.git
