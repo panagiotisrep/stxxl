@@ -517,11 +517,11 @@ STXXL_BEGIN_NAMESPACE
 
       void minor_flush_to_log_vector() {
         // TODO does this help stxxl sort?
-        std::sort(m_in_memory_table.begin(), m_in_memory_table.end(), [](cache_element const& a, cache_element const& b)
-        {
-          HashCompare cmp{};
-          return cmp(a.first, b.first);
-        });
+        // std::sort(m_in_memory_table.begin(), m_in_memory_table.end(), [](cache_element const& a, cache_element const& b)
+        // {
+        //   HashCompare cmp{};
+        //   return cmp(a.first, b.first);
+        // });
 
         // if (m_elements.size() < get_vector_size_for_n_tiers(0))
         // {
