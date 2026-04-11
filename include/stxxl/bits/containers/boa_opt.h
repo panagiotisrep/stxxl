@@ -570,12 +570,12 @@ STXXL_BEGIN_NAMESPACE
 
           m_lazy_insertion_log.push_back(elem);
 #endif
-          // if (pos >= m_elements.size()) {
-          //   m_elements.push_back(data_elem);
-          // }
-          // else {
-          //   m_elements[pos] = data_elem;
-          // }
+          if (pos >= m_elements.size()) {
+            m_elements.push_back(data_elem);
+          }
+          else {
+            m_elements[pos] = data_elem;
+          }
         }
       }
 
