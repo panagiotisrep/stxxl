@@ -271,12 +271,27 @@ STXXL_BEGIN_NAMESPACE
       typedef typename VECTOR_GENERATOR<data_element, PageSize, 3, BlockSize, stxxl::RC, stxxl::lru>::result
       external_data_vector;
 
+      struct lazy_run_element
+      {
+        HashType m_hash{0};
+        uint32_t m_data_vector_index{0};
+      };
+
+      typedef typename VECTOR_GENERATOR<lazy_run_element, PageSize, 3, 1024*1024, stxxl::RC, stxxl::lru>::result
+      external_lazy_run_item_vector;
+
       struct run_element
       {
         run_index m_prev_run = -1;
         index_in_run m_prev_index_in_run = 0;
         HashType m_hash{0};
         uint32_t m_data_vector_index{0};
+
+        run_element() = default;
+        run_element(lazy_run_element const& lazy) : m_hash(lazy.m_hash), m_data_vector_index(lazy.m_data_vector_index) {
+          m_prev_index_in_run = 0;
+          m_prev_run = -1;
+        }
       };
 
       typedef typename VECTOR_GENERATOR<run_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
@@ -291,7 +306,7 @@ STXXL_BEGIN_NAMESPACE
 
       external_vector m_run;
       external_data_vector m_elements;
-      external_vector m_lazy_insertion_log;
+      external_lazy_run_item_vector m_lazy_insertion_log;
       std::unique_ptr<routing_filter<HashType, 4, PageSize, BlockSize>> m_routing_filter;
 
       struct tier
@@ -530,7 +545,7 @@ STXXL_BEGIN_NAMESPACE
 
         for (auto& item : m_in_memory_table)
         {
-          run_element elem;
+          lazy_run_element elem;
           data_element data_elem;
           elem.m_hash = item.first;
           elem.m_data_vector_index = m_elements_in_external_memory++;
@@ -543,10 +558,11 @@ STXXL_BEGIN_NAMESPACE
         }
       }
 
-      void sort_vector(typename external_vector::iterator it_begin, typename external_vector::iterator it_end) {
+      template<class vector_type, class element_type>
+      void sort_vector(typename vector_type::iterator it_begin, typename vector_type::iterator it_end) {
         struct my_less
         {
-          typedef run_element value_type;
+          typedef element_type value_type;
           bool operator() (const value_type & a, const value_type & b) const
           {
             return a.m_hash < b.m_hash;
@@ -774,7 +790,7 @@ STXXL_BEGIN_NAMESPACE
 
         auto it_begin = m_run.begin() + target_run_offset;
         auto it_end = m_run.begin() + target_run_offset + moved_elements;
-        sort_vector(it_begin, it_end);
+        sort_vector<external_vector, run_element>(it_begin, it_end);
 
         return moved_elements_from_log;
       }
@@ -878,7 +894,7 @@ STXXL_BEGIN_NAMESPACE
 
             auto target_run_offset = get_run_offset(tier_layout.first, first_inactive_run);
             for (int i=0 ; i <final.m_run_size ; i++) {
-              auto elem = log[total_moved_elements++];
+              auto elem = run_element(log[total_moved_elements++]);
 
               auto prev_route = m_routing_filter->get_run_index(elem.m_hash, tier_layout.first);
               if (prev_route.first > first_inactive_run)
@@ -902,7 +918,7 @@ STXXL_BEGIN_NAMESPACE
       }
 
       void flush_to_boa_impl() {
-        sort_vector(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
+        sort_vector<external_lazy_run_item_vector, lazy_run_element>(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
         auto new_space = compute_space_for_lazy_insertion_log();
         auto moved_from_log = make_space_for_new_inserts(new_space);
         flush_from_log(moved_from_log);
