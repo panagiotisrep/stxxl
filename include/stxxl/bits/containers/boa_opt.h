@@ -300,6 +300,7 @@ STXXL_BEGIN_NAMESPACE
         std::vector<run> m_runs;
         uint16_t m_level{0};
         bool m_dirty_routing_filter{false};
+        bool m_empty_filter{true};
 
         size_t vector_run_offset(unsigned int run) const
         {
@@ -589,9 +590,9 @@ STXXL_BEGIN_NAMESPACE
         return std::make_pair(max_tier, max_run);
       }
 
-      std::map<unsigned int, unsigned int> compute_layout_for_lazy_insertion_log() {
+      std::map<unsigned int, unsigned int> compute_layout_for_lazy_insertion_log(unsigned int log_size) {
         std::map<unsigned int, unsigned int> tier_to_max_run;
-        unsigned int first_tier_runs = m_lazy_insertion_log.size() / m_in_memory_table_max_size;
+        unsigned int first_tier_runs = log_size / m_in_memory_table_max_size;
 
         while (first_tier_runs > 0) {
           unsigned int max_tier{0};
@@ -738,6 +739,8 @@ STXXL_BEGIN_NAMESPACE
         final.m_run_size = target_tier_run_size;
         final.m_elements_number = target_tier_run_size;
 
+        m_tiers[target_tier].m_dirty_routing_filter = true;
+
         // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
         if (m_run.size() < get_vector_size_for_n_tiers(target_tier))
         {
@@ -804,7 +807,7 @@ STXXL_BEGIN_NAMESPACE
 
           unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                   RunsPerTier, at_tier);
-          unsigned int till_run = at_tier == highest_tier ? last_run : RunsPerTier - 1;
+          unsigned int till_run = at_tier == highest_tier ? last_run + active_runs(m_tiers[at_tier]) : RunsPerTier - 1;
           while (m_tiers[at_tier].m_runs.size() < till_run + 1)
           {
             run r;
@@ -812,15 +815,15 @@ STXXL_BEGIN_NAMESPACE
             r.m_elements_number = target_tier_run_size;
             m_tiers[at_tier].m_runs.push_back(std::move(r));
           }
+        }
 
-          if (m_run.size() < get_vector_size_for_n_tiers(at_tier))
-          {
-            m_run.resize(get_vector_size_for_n_tiers(at_tier));
-          }
-          if (m_elements.size() < get_vector_size_for_n_tiers(at_tier))
-          {
-            m_elements.resize(get_vector_size_for_n_tiers(at_tier));
-          }
+        if (m_run.size() < get_vector_size_for_n_tiers(highest_tier))
+        {
+          m_run.resize(get_vector_size_for_n_tiers(highest_tier));
+        }
+        if (m_elements.size() < get_vector_size_for_n_tiers(highest_tier))
+        {
+          m_elements.resize(get_vector_size_for_n_tiers(highest_tier));
         }
 
         return moved_elements;
@@ -828,15 +831,30 @@ STXXL_BEGIN_NAMESPACE
 
       void flush_from_log(unsigned int moved_first_elements) {
         unsigned int total_moved_elements = moved_first_elements;
-        auto const log = m_lazy_insertion_log;
-        auto final_layout = compute_layout_for_lazy_insertion_log();
+        auto const & log = m_lazy_insertion_log;
+        auto remaining_elements = log.size() - total_moved_elements;
+        auto final_layout = compute_layout_for_lazy_insertion_log(remaining_elements);
 
         for (auto tier_layout : final_layout) {
-          m_routing_filter->reset(tier_layout.first);
+          if (!m_tiers[tier_layout.first].m_empty_filter) {
+            m_routing_filter->reset(tier_layout.first);
+          }
+
+          if (active_runs(m_tiers[tier_layout.first]) > 0) {
+            update_routing_filter(m_tiers[tier_layout.first]);
+            m_tiers[tier_layout.first].m_dirty_routing_filter = false;
+          }
 
           for (int at_run=0 ; at_run <= tier_layout.second ; at_run++) {
-            if (m_tiers[tier_layout.first].m_runs[at_run].active) {
-              std::cout << "Error: Tier " << tier_layout.first << " run " << at_run << " is active" << std::endl;
+            if (total_moved_elements == log.size()) {
+              std::cout << "Have moved all elements from log" << std::endl;
+              continue;
+            }
+
+            int first_inactive_run = first_non_active_run_in_tier(tier_layout.first);
+
+            if (first_inactive_run == -1) {
+              std::cout << "Error: In tier " << tier_layout.first << " no free run" << std::endl;
               throw std::runtime_error("Error: Tier run is active");
             }
 
@@ -844,7 +862,7 @@ STXXL_BEGIN_NAMESPACE
 
             unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                  RunsPerTier, tier_layout.first);
-            run& final = m_tiers[tier_layout.first].m_runs[at_run];
+            run& final = m_tiers[tier_layout.first].m_runs[first_inactive_run];
             final.active = true;
             final.m_run_size = target_tier_run_size;
             final.m_elements_number = target_tier_run_size;
@@ -858,19 +876,19 @@ STXXL_BEGIN_NAMESPACE
               m_elements.resize(get_vector_size_for_n_tiers(tier_layout.first));
             }
 
-            auto target_run_offset = get_run_offset(tier_layout.first, at_run);
+            auto target_run_offset = get_run_offset(tier_layout.first, first_inactive_run);
             for (int i=0 ; i <final.m_run_size ; i++) {
               auto elem = log[total_moved_elements++];
 
               auto prev_route = m_routing_filter->get_run_index(elem.m_hash, tier_layout.first);
-              if (prev_route.first > at_run)
+              if (prev_route.first > first_inactive_run)
               {
                 prev_route.first = 0;
                 prev_route.second = 0;
               }
               elem.m_prev_run = prev_route.first;
               elem.m_prev_index_in_run = prev_route.second;
-              m_routing_filter->insert(at_run, i, tier_layout.first, elem.m_hash);
+              m_routing_filter->insert(first_inactive_run, i, tier_layout.first, elem.m_hash);
 
               m_run[target_run_offset + i] = elem;
             }
@@ -888,8 +906,10 @@ STXXL_BEGIN_NAMESPACE
         auto new_space = compute_space_for_lazy_insertion_log();
         auto moved_from_log = make_space_for_new_inserts(new_space);
         flush_from_log(moved_from_log);
+        std::cout << "Flushed lazy insertion log size: " << m_lazy_insertion_log.size() << std::endl;
         m_lazy_insertion_log.clear();
-        // update_routing_filters();
+        compact_tiers();
+        update_routing_filters();
       }
 
       void lazy_insert_impl(element_type const &value) {
@@ -1015,6 +1035,7 @@ STXXL_BEGIN_NAMESPACE
           ++it;
         } // while (it != m_in_memory_table.end()).
         // m_tiers[0].m_runs.push_back(std::move(r));
+        m_tiers[0].m_empty_filter = false;
         compact_tiers();
       }
 
@@ -1068,6 +1089,7 @@ STXXL_BEGIN_NAMESPACE
               run.active = false;
             }
             m_routing_filter->reset(tier_no);
+            m_tiers[tier_no].m_empty_filter = true;
             m_stats.tier_to_collisions[tier_no] = 0;
           }
         } // for (auto & tier : m_tiers).
@@ -1225,6 +1247,8 @@ STXXL_BEGIN_NAMESPACE
             heap.erase(heap.begin() + min_index_in_heap);
           }
         }
+
+        m_tiers[dest_tier.m_level].m_empty_filter = false;
 
         if (index != final.m_run_size)
         {
