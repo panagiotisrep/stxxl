@@ -268,7 +268,7 @@ STXXL_BEGIN_NAMESPACE
         DataType m_value;
       };
 
-      typedef typename VECTOR_GENERATOR<data_element, PageSize, 3, BlockSize, stxxl::RC, stxxl::lru>::result
+      typedef typename VECTOR_GENERATOR<data_element, PageSize, 5, 1024*1024, stxxl::RC, stxxl::lru>::result
       external_data_vector;
 
       struct lazy_run_element
@@ -277,7 +277,7 @@ STXXL_BEGIN_NAMESPACE
         uint32_t m_data_vector_index{0};
       };
 
-      typedef typename VECTOR_GENERATOR<lazy_run_element, PageSize, 3, 1024*1024, stxxl::RC, stxxl::lru>::result
+      typedef typename VECTOR_GENERATOR<lazy_run_element, PageSize, 5, 1024*1024, stxxl::RC, stxxl::lru>::result
       external_lazy_run_item_vector;
 
       struct run_element
@@ -553,8 +553,12 @@ STXXL_BEGIN_NAMESPACE
           data_elem.m_value = item.second.second;
 
           m_lazy_insertion_log.push_back(elem);
-          // m_elements[elem.m_data_vector_index] = data_elem;
-          m_elements.push_back(data_elem);
+          if (elem.m_data_vector_index >= m_elements.size()) {
+            m_elements.push_back(data_elem);
+          }
+          else {
+            m_elements[elem.m_data_vector_index] = data_elem;
+          }
         }
       }
 
@@ -931,6 +935,7 @@ STXXL_BEGIN_NAMESPACE
       void lazy_insert_impl(element_type const &value) {
         HashType hash;
         hash = HashFunction(value.first);
+
         m_in_memory_table.push_back({hash, value});
 
         if (m_in_memory_table.size() >= m_in_memory_table_max_size)
