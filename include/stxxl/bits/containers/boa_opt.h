@@ -18,8 +18,10 @@
 #include <stxxl/map>
 #include <stxxl/vector>
 #include <queue>
+#include <ips2ra.hpp>
 
 // #define ROUTING_FILTER_MULT 1
+#define IN_MEMORY_SORT
 
 STXXL_BEGIN_NAMESPACE
   namespace boa_opt
@@ -235,6 +237,7 @@ STXXL_BEGIN_NAMESPACE
       typedef std::pair<HashType, element_type> cache_element;
       // std::map<HashType, element_type, HashCompare> m_in_memory_table;
       std::vector<cache_element> m_in_memory_table;
+      std::vector<std::pair<size_t, cache_element>> m_in_memory_lazy_table;
 
       unsigned int m_in_memory_table_max_size;
       size_t m_elements_in_external_memory;
@@ -289,6 +292,11 @@ STXXL_BEGIN_NAMESPACE
 
         run_element() = default;
         run_element(lazy_run_element const& lazy) : m_hash(lazy.m_hash), m_data_vector_index(lazy.m_data_vector_index) {
+          m_prev_index_in_run = 0;
+          m_prev_run = -1;
+        }
+
+        run_element(std::pair<HashType, cache_element> const& pair) : m_hash(pair.second.first), m_data_vector_index(pair.first) {
           m_prev_index_in_run = 0;
           m_prev_run = -1;
         }
@@ -498,6 +506,9 @@ STXXL_BEGIN_NAMESPACE
 
       void reserve_lazy_space_for_elements(size_t size) {
         m_lazy_insertion_log.reserve(size);
+#ifdef IN_MEMORY_SORT
+      m_in_memory_lazy_table.reserve(size);
+#endif
         m_elements.reserve(size);
       }
 
@@ -545,19 +556,25 @@ STXXL_BEGIN_NAMESPACE
 
         for (auto& item : m_in_memory_table)
         {
-          lazy_run_element elem;
+          auto pos = m_elements_in_external_memory++;
           data_element data_elem;
-          elem.m_hash = item.first;
-          elem.m_data_vector_index = m_elements_in_external_memory++;
           data_elem.m_key = item.second.first;
           data_elem.m_value = item.second.second;
 
+#ifdef  IN_MEMORY_SORT
+          m_in_memory_lazy_table.push_back(std::make_pair(pos, item));
+#else
+          lazy_run_element elem;
+          elem.m_hash = item.first;
+          elem.m_data_vector_index = pos;
+
           m_lazy_insertion_log.push_back(elem);
-          if (elem.m_data_vector_index >= m_elements.size()) {
+#endif
+          if (pos >= m_elements.size()) {
             m_elements.push_back(data_elem);
           }
           else {
-            m_elements[elem.m_data_vector_index] = data_elem;
+            m_elements[pos] = data_elem;
           }
         }
       }
@@ -595,11 +612,11 @@ STXXL_BEGIN_NAMESPACE
        * If in empty boa, how would it be after insertions
        * @return tier, run where tier max tier reached, run max run in last tier
        */
-      std::pair<unsigned int, unsigned int> compute_space_for_lazy_insertion_log() {
+      std::pair<unsigned int, unsigned int> compute_space_for_lazy_insertion_log(size_t log_size) {
         unsigned int max_tier{0};
         unsigned int max_run{0};
 
-        unsigned int first_tier_runs = m_lazy_insertion_log.size() / m_in_memory_table_max_size;
+        unsigned int first_tier_runs = log_size / m_in_memory_table_max_size;
         while (first_tier_runs > pow(RunsPerTier, max_tier+1)) {
           ++max_tier;
         }
@@ -851,7 +868,11 @@ STXXL_BEGIN_NAMESPACE
 
       void flush_from_log(unsigned int moved_first_elements) {
         unsigned int total_moved_elements = moved_first_elements;
+#ifdef IN_MEMORY_SORT
+        auto const & log = m_in_memory_lazy_table;
+#else
         auto const & log = m_lazy_insertion_log;
+#endif
         auto remaining_elements = log.size() - total_moved_elements;
         auto final_layout = compute_layout_for_lazy_insertion_log(remaining_elements);
 
@@ -922,12 +943,35 @@ STXXL_BEGIN_NAMESPACE
       }
 
       void flush_to_boa_impl() {
+#ifdef IN_MEMORY_SORT
+        std::cout << "Sorting lazy insertion log" << std::endl;
+        std::cout << "Log size: " << m_in_memory_lazy_table.size() << std::endl;
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        auto hashFunction = [](const std::pair<size_t, cache_element> &x) -> HashType {
+          return x.second.first;
+        };
+
+        ips2ra::sort(m_in_memory_lazy_table.begin(), m_in_memory_lazy_table.end(), hashFunction);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "Sort completed in " << duration.count() << " milliseconds" << std::endl;
+
+        auto new_space = compute_space_for_lazy_insertion_log(m_in_memory_lazy_table.size());
+        auto moved_from_log = make_space_for_new_inserts(new_space);
+        flush_from_log(moved_from_log);
+        std::cout << "Flushed lazy insertion log size: " << m_in_memory_lazy_table.size() << std::endl;
+        m_in_memory_lazy_table.clear();
+#else
         sort_vector<external_lazy_run_item_vector, lazy_run_element>(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
-        auto new_space = compute_space_for_lazy_insertion_log();
+        auto new_space = compute_space_for_lazy_insertion_log(m_lazy_insertion_log.size());
         auto moved_from_log = make_space_for_new_inserts(new_space);
         flush_from_log(moved_from_log);
         std::cout << "Flushed lazy insertion log size: " << m_lazy_insertion_log.size() << std::endl;
         m_lazy_insertion_log.clear();
+#endif
         compact_tiers();
         update_routing_filters();
       }

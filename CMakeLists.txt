@@ -41,6 +41,7 @@ set(STXXL_VERSION_PATCH "99")
 set(STXXL_VERSION_STRING "${STXXL_VERSION_MAJOR}.${STXXL_VERSION_MINOR}.${STXXL_VERSION_PATCH}")
 set(STXXL_VERSION_PHASE "prerelease/${CMAKE_BUILD_TYPE}")
 
+
 # read git directory (if it exists) and find git sha
 if(EXISTS ${PROJECT_SOURCE_DIR}/.git)
   find_package(Git)
@@ -97,7 +98,6 @@ if(NOT MSVC)
   option(USE_STD_THREADS "Force usage of C++ standard library thread support." OFF)
 endif()
 
-option(NO_CXX11 "Build without C++11 flags" OFF)
 
 option(USE_VALGRIND "Run tests with valgrind, pre-initialize some memory buffers." OFF)
 
@@ -227,35 +227,7 @@ if(CXX_HAS_TEMPLATE_DEPTH)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftemplate-depth=1024")
 endif()
 
-# enable C++11
-if(MSVC)
-  # MSVC 11 or greater has C++11 automatically enabled
-elseif(CYGWIN)
-  # C++11 is very restrictive on Cygwin
-elseif(NOT NO_CXX11)
-  # try -std= flags to enable C++11
-  check_cxx_compiler_flag(-std=c++11 CXX_HAS_STD_CXX11)
-  if(CXX_HAS_STD_CXX11)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-  else()
-    check_cxx_compiler_flag(-std=c++0x CXX_HAS_STD_CXX0X)
-    if(CXX_HAS_STD_CXX0X)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
-    endif()
-  endif()
-  # on MacOSX with clang we need to use libc++ for C++11 headers
-  if(APPLE)
-    if (CMAKE_CXX_COMPILER MATCHES ".*clang[+][+]"
-        OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-      check_cxx_compiler_flag(-stdlib=libc++ CXX_HAS_STDLIB_LIBCXX)
-      if(CXX_HAS_STDLIB_LIBCXX)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-      else()
-        message(SEND_ERROR "Compilation on MacOSX with clang requires libc++.")
-      endif()
-    endif()
-  endif(APPLE)
-endif()
+# C++20 is required - will be set per target
 
 # check C++ compiler for C++11 features
 
@@ -577,8 +549,14 @@ configure_file(${PROJECT_SOURCE_DIR}/include/stxxl/bits/config.h.in ${PROJECT_BI
 set(STXXL_CXX_FLAGS ${OpenMP_CXX_FLAGS})
 
 # globally adds top-level include directories
-set(STXXL_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/include/ ${PROJECT_BINARY_DIR}/include/)
+set(STXXL_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/extern/ips2ra/include ${PROJECT_SOURCE_DIR}/include/ ${PROJECT_BINARY_DIR}/include/)
 include_directories(${STXXL_INCLUDE_DIRS})
+
+set(TLX_INSTALL_INCLUDE_DIR tlx CACHE PATH "Workaround for TLX breaking the first cmake call")
+add_subdirectory(${CMAKE_SOURCE_DIR}/extern/tlx SYSTEM EXCLUDE_FROM_ALL)
+
+set(IPS2RA_DISABLE_PARALLEL ON CACHE PATH "FindTBB greps a file that does not exist in recent TBB versions")
+add_subdirectory(${CMAKE_SOURCE_DIR}/extern/ips2ra SYSTEM EXCLUDE_FROM_ALL)
 
 # for targets using stxxl library
 set(STXXL_EXTRA_LIBRARIES ${STXXL_EXTRA_LIBRARIES} ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
@@ -599,7 +577,12 @@ add_subdirectory(lib)
 macro(stxxl_build_tool PROGNAME)
 
   add_executable(${PROGNAME} ${PROGNAME}.cpp ${ARGN})
-  target_link_libraries(${PROGNAME} ${STXXL_LIBRARIES})
+  target_compile_features(${PROGNAME} PUBLIC cxx_std_20)
+  target_link_libraries(${PROGNAME} PRIVATE ${STXXL_LIBRARIES})
+
+  target_include_directories(${PROGNAME} SYSTEM INTERFACE ${CMAKE_SOURCE_DIR}/extern/ips2ra/include)
+  target_include_directories(${PROGNAME} SYSTEM INTERFACE ${CMAKE_SOURCE_DIR}/extern/ips2ra/extern/tlx/tlx)
+  target_link_libraries(${PROGNAME} INTERFACE ips2ra tlx)
 
 endmacro(stxxl_build_tool)
 
@@ -682,6 +665,7 @@ if(TRY_COMPILE_HEADERS)
   set(CMAKE_REQUIRED_LIBRARIES ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
   file(GLOB_RECURSE header_files FOLLOW_SYMLINKS "include/*")
+  file(GLOB_RECURSE header_files FOLLOW_SYMLINKS "extern/*")
   list(REMOVE_ITEM header_files "${PROJECT_SOURCE_DIR}/include/stxxl/bits/config.h.in")
   list(SORT header_files)
 

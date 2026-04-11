@@ -1,3 +1,7 @@
+
 [submodule "extern/ips2ra"]
 	path = extern/ips2ra
 	url = git@github.com:ips4o/ips2ra.git
+[submodule "extern/tlx"]
+	path = extern/tlx
+	url = https://github.com/tlx/tlx.git
