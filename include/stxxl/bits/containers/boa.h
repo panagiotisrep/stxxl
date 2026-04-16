@@ -17,7 +17,7 @@
 #include <stxxl/vector>
 #include <queue>
 
-// #define BOA_SEARCH_VIA_BUCKETS
+#define BOA_SEARCH_VIA_BUCKETS
 // #define ROUTING_FILTER_MULT 1
 
 STXXL_BEGIN_NAMESPACE
@@ -32,7 +32,9 @@ STXXL_BEGIN_NAMESPACE
       struct routing_element
       {
         run_index run;
+#ifndef BOA_SEARCH_VIA_BUCKETS
         index_in_run index;
+#endif
       };
 
       typedef typename VECTOR_GENERATOR<routing_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
@@ -53,7 +55,9 @@ STXXL_BEGIN_NAMESPACE
       {
         routing_element element;
         element.run = 0;
+#ifndef BOA_SEARCH_VIA_BUCKETS
         element.index = 0;
+#endif
         std::fill(m_filter->begin(), m_filter->end(), element);
       }
 
@@ -79,6 +83,11 @@ STXXL_BEGIN_NAMESPACE
         return get_bits(h1, prefix_bits_length_) == get_bits(h2, prefix_bits_length_);
       }
 
+      bool smaller_prefixes(HashType const& h1, HashType const& h2)
+      {
+        return get_bits(h1, prefix_bits_length_) < get_bits(h2, prefix_bits_length_);
+      }
+
       size_t get_index_from_hash(HashType const& hash)
       {
         return get_bits(hash, prefix_bits_length_);
@@ -95,7 +104,11 @@ STXXL_BEGIN_NAMESPACE
         routing_external_vector const& v = *m_filter;
         routing_element ret = v[index];
         ret.run -= 1;
+#ifndef BOA_SEARCH_VIA_BUCKETS
         return {ret.run, ret.index};
+#else
+        return {ret.run, 0};
+#endif
       }
 
       void insert(run_index r_index, index_in_run index_in_r, HashType const& hash)
@@ -103,7 +116,9 @@ STXXL_BEGIN_NAMESPACE
         auto index = get_index_from_hash(hash);
         routing_element element;
         element.run = r_index + 1;
+#ifndef BOA_SEARCH_VIA_BUCKETS
         element.index = index_in_r;
+#endif
         (*m_filter)[index] = element;
       }
 
@@ -273,7 +288,9 @@ STXXL_BEGIN_NAMESPACE
       struct run_element
       {
         run_index m_prev_run = -1;
+#ifndef BOA_SEARCH_VIA_BUCKETS
         index_in_run m_prev_index_in_run = 0;
+#endif
         HashType m_hash;
         uint32_t m_data_vector_index{0};
       };
@@ -292,6 +309,8 @@ STXXL_BEGIN_NAMESPACE
         unsigned int m_run_size{};
         unsigned int m_bucket_size{}; // elements per bucket
         bool active{false};
+        HashType m_min_hash{0};
+        HashType m_max_hash{0};
         size_t m_size{0};
       };
 
@@ -434,6 +453,7 @@ STXXL_BEGIN_NAMESPACE
               bool found_prefix_in_bucket = false;
               auto tmp = run_to_search;
 
+
               for (int at = start; at < stop; at++)
               {
                 ++stats.visited_elements;
@@ -444,10 +464,10 @@ STXXL_BEGIN_NAMESPACE
                 {
                   ++stats.empty_elements;
                 }
-                if (h > hash)
-                {
-                  break;
-                }
+                // if (h > hash)
+                // {
+                  // break;
+                // }
                 else if (h == hash)
                 {
                   auto data = data_v[e.m_data_vector_index];
@@ -461,35 +481,107 @@ STXXL_BEGIN_NAMESPACE
                   if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run))
                   {
                     visited_runs.push_unique(e.m_prev_run);
-                    run_to_search = {e.m_prev_run, e.m_prev_index_in_run};
+
+                    run_to_search = {e.m_prev_run, -1};
                     found_prefix_in_bucket = true;
                     // break;
                   }
                 }
               } // for (int at = start; at < stop; at++).
 
-              auto prev = v[tmp.second];
-              if (!found_prefix_in_bucket)
-              {
-                auto prev = v[run_to_search.second];
+              if (!found_prefix_in_bucket) {
+               run_element e;
+              //   for (int at = 0; at < v.size() ; ++at) {
+              //     ++stats.visited_elements;
+              //     stats.elements_per_tier[at_tier] += 1;
+              //     e = v[at];
+              //     auto h = e.m_hash;
+              //     if (h == 0)
+              //     {
+              //       ++stats.empty_elements;
+              //     }
+              //     else if (h == hash)
+              //     {
+              //       auto data = data_v[e.m_data_vector_index];
+              //       if (data.m_key == k)
+              //       {
+              //         return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+              //       }
+              //     }
+              //     else if (tier.m_routing_filter->equal_prefixes(h, hash))
+              //     {
+              //       if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run))
+              //       {
+              //         visited_runs.push_unique(e.m_prev_run);
+              //
+              //         run_to_search = {e.m_prev_run, -1};
+              //         found_prefix_in_bucket = true;
+              //         break;
+              //       }
+              //     }
+              //   }
+                //
+                run_element to_searh;
 
-                if (prev.m_hash == hash)
-                {
-                  auto data = data_v[prev.m_data_vector_index];
-                  if (data.m_key == k)
-                  {
-                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+
+                HashType prefix = hash >> (64 - tier.m_routing_filter->prefix_bits_length_);
+                HashType low = prefix << (64 - tier.m_routing_filter->prefix_bits_length_);
+                HashType high = low | ((tier.m_routing_filter->prefix_bits_length_ == 64) ? 0 : ((1ULL << (64 - tier.m_routing_filter->prefix_bits_length_)) - 1));
+                to_searh.m_hash = low;
+
+                auto it = std::lower_bound(v.begin(), v.end(), to_searh,
+                    [](const run_element& a, const run_element& b) {
+                        return a.m_hash < b.m_hash;
+                    });
+
+                if (it != v.end() && it->m_hash <= high) {
+                  found_prefix_in_bucket = true;
+                  e = *it;
+
+                  for (; it != v.end(); ++it) {
+                    // if (it->m_hash > high) break;   // exited prefix bucket
+                    if (it->m_hash == hash) {       // exact match
+                      e = *it;
+                      break;
+                    }
                   }
+
+                } else {
+                  found_prefix_in_bucket = false;
                 }
 
-                if (prev.m_prev_run != -1 && !visited_runs.contains(prev.m_prev_run))
-                {
-                  visited_runs.push_unique(prev.m_prev_run);
-                  run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
+
+                if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run)) {
+                  found_prefix_in_bucket = false;
                 }
-                else
+                else {
+                  visited_runs.push_unique(e.m_prev_run);
+
+                  run_to_search = {e.m_prev_run, -1};
+                }
+
+                if (!found_prefix_in_bucket)
                 {
-                  run_to_search.first = -1;
+                  auto prev = e;
+
+                  if (prev.m_hash == hash)
+                  {
+                    auto data = data_v[prev.m_data_vector_index];
+                    if (data.m_key == k)
+                    {
+                      return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+                    }
+                  }
+
+                  if (prev.m_prev_run != -1 && !visited_runs.contains(prev.m_prev_run))
+                  {
+                    visited_runs.push_unique(prev.m_prev_run);
+                    run_to_search = {prev.m_prev_run, -1};
+                  }
+                  else
+                  {
+                    run_to_search.first = -1;
+                  }
                 }
               }
 #else
@@ -562,7 +654,7 @@ STXXL_BEGIN_NAMESPACE
     private:
       routing_filter<HashType, Pages, PageSize, BlockSize>* create_routing_filter(uint16_t tier_level = 0)
       {
-        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + ROUTING_FILTER_MULT);
+        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + ROUTING_FILTER_MULT) / 1;
         // auto hl = std::log2(run_size) / std::log2(RunsPerTier);
         // auto l_hl = p
         return new routing_filter<HashType, Pages, PageSize, BlockSize>(run_size);
@@ -713,7 +805,9 @@ STXXL_BEGIN_NAMESPACE
 
             auto prev_route = m_tiers[0].m_routing_filter->get_run_index(elem.m_hash);
             elem.m_prev_run = prev_route.first;
+#ifndef BOA_SEARCH_VIA_BUCKETS
             elem.m_prev_index_in_run = prev_route.second;
+#endif
             auto index_in_array = total_added;
             if (prev_route.first == first_inactive_index)
             {
@@ -1028,7 +1122,9 @@ STXXL_BEGIN_NAMESPACE
             m_stats.tier_to_collisions[dest_tier.m_level] += 1;
           }
           min_key.m_prev_run = prev_route.first;
+#ifndef BOA_SEARCH_VIA_BUCKETS
           min_key.m_prev_index_in_run = prev_route.second;
+#endif
           auto index_in_array = total_added;
 #ifdef BOA_SEARCH_VIA_BUCKETS
           if (prev_route.first == first_inactive_index)
