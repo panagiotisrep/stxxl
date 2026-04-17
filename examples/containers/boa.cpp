@@ -186,7 +186,7 @@ const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
 const double routing_filter_mult = ROUTING_FILTER_MULT;
 
-const int size = 10000000;
+const int size = 200000000;
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
