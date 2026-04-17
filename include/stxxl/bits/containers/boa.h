@@ -17,7 +17,7 @@
 #include <stxxl/vector>
 #include <queue>
 
-#define BOA_SEARCH_VIA_BUCKETS
+// #define BOA_SEARCH_VIA_BUCKETS
 // #define ROUTING_FILTER_MULT 1
 
 STXXL_BEGIN_NAMESPACE
