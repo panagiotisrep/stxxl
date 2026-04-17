@@ -486,79 +486,86 @@ STXXL_BEGIN_NAMESPACE
                     found_prefix_in_bucket = true;
                     // break;
                   }
+                  else if (e.m_prev_run == -1)
+                  {
+                    if (!found_prefix_in_bucket) {
+                      found_prefix_in_bucket = true;
+                      run_to_search = {-1, -1};
+                    }
+                  }
                 }
               } // for (int at = start; at < stop; at++).
 
               if (!found_prefix_in_bucket) {
                run_element e;
-              //   for (int at = 0; at < v.size() ; ++at) {
-              //     ++stats.visited_elements;
-              //     stats.elements_per_tier[at_tier] += 1;
-              //     e = v[at];
-              //     auto h = e.m_hash;
-              //     if (h == 0)
-              //     {
-              //       ++stats.empty_elements;
-              //     }
-              //     else if (h == hash)
-              //     {
-              //       auto data = data_v[e.m_data_vector_index];
-              //       if (data.m_key == k)
-              //       {
-              //         return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
-              //       }
-              //     }
-              //     else if (tier.m_routing_filter->equal_prefixes(h, hash))
-              //     {
-              //       if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run))
-              //       {
-              //         visited_runs.push_unique(e.m_prev_run);
-              //
-              //         run_to_search = {e.m_prev_run, -1};
-              //         found_prefix_in_bucket = true;
-              //         break;
-              //       }
-              //     }
-              //   }
-                //
-                run_element to_searh;
-
-
-                HashType prefix = hash >> (64 - tier.m_routing_filter->prefix_bits_length_);
-                HashType low = prefix << (64 - tier.m_routing_filter->prefix_bits_length_);
-                HashType high = low | ((tier.m_routing_filter->prefix_bits_length_ == 64) ? 0 : ((1ULL << (64 - tier.m_routing_filter->prefix_bits_length_)) - 1));
-                to_searh.m_hash = low;
-
-                auto it = std::lower_bound(v.begin(), v.end(), to_searh,
-                    [](const run_element& a, const run_element& b) {
-                        return a.m_hash < b.m_hash;
-                    });
-
-                if (it != v.end() && it->m_hash <= high) {
-                  found_prefix_in_bucket = true;
-                  e = *it;
-
-                  for (; it != v.end(); ++it) {
-                    // if (it->m_hash > high) break;   // exited prefix bucket
-                    if (it->m_hash == hash) {       // exact match
-                      e = *it;
-                      break;
-                    }
+              for (int at = 0; at < v.size() ; ++at) {
+                ++stats.visited_elements;
+                stats.elements_per_tier[at_tier] += 1;
+                e = v[at];
+                auto h = e.m_hash;
+                if (h == 0)
+                {
+                  ++stats.empty_elements;
+                }
+                else if (h == hash)
+                {
+                  auto data = data_v[e.m_data_vector_index];
+                  if (data.m_key == k)
+                  {
+                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
                   }
-
-                } else {
-                  found_prefix_in_bucket = false;
                 }
+                else if (tier.m_routing_filter->equal_prefixes(h, hash))
+                {
+                  if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run))
+                  {
+                    visited_runs.push_unique(e.m_prev_run);
 
-
-                if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run)) {
-                  found_prefix_in_bucket = false;
+                    run_to_search = {e.m_prev_run, -1};
+                    found_prefix_in_bucket = true;
+                    break;
+                  }
                 }
-                else {
-                  visited_runs.push_unique(e.m_prev_run);
+              }
 
-                  run_to_search = {e.m_prev_run, -1};
-                }
+                // run_element to_searh;
+                //
+                //
+                // HashType prefix = hash >> (64 - tier.m_routing_filter->prefix_bits_length_);
+                // HashType low = prefix << (64 - tier.m_routing_filter->prefix_bits_length_);
+                // HashType high = low | ((tier.m_routing_filter->prefix_bits_length_ == 64) ? 0 : ((1ULL << (64 - tier.m_routing_filter->prefix_bits_length_)) - 1));
+                // to_searh.m_hash = low;
+                //
+                // auto it = std::lower_bound(v.begin(), v.end(), to_searh,
+                //     [](const run_element& a, const run_element& b) {
+                //         return a.m_hash < b.m_hash;
+                //     });
+                //
+                // if (it != v.end() && it->m_hash <= high) {
+                //   found_prefix_in_bucket = true;
+                //   e = *it;
+                //
+                //   for (; it != v.end(); ++it) {
+                //     // if (it->m_hash > high) break;   // exited prefix bucket
+                //     if (it->m_hash == hash) {       // exact match
+                //       e = *it;
+                //       break;
+                //     }
+                //   }
+                //
+                // } else {
+                //   found_prefix_in_bucket = false;
+                // }
+                //
+                //
+                // if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run)) {
+                //   found_prefix_in_bucket = false;
+                // }
+                // else {
+                //   visited_runs.push_unique(e.m_prev_run);
+                //
+                //   run_to_search = {e.m_prev_run, -1};
+                // }
 
                 if (!found_prefix_in_bucket)
                 {
