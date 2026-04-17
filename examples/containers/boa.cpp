@@ -33,6 +33,7 @@
 #include <string>
 #include <stdexcept>
 #include <tuple>
+#include <bytehamster/util/MurmurHash64.h>
 
 //! [comparator]
 struct HashCompare
@@ -73,9 +74,10 @@ uint64_t reverse_bits(uint64_t const& x) noexcept
 
 uint64_t HashFunction(uint32_t const& k)
 {
-	auto h = hash.hash_uint64(k);
-	auto a = reverse_bits(h);
-	return a;
+	// auto h = hash.hash_uint64(k);
+	// auto a = reverse_bits(h);
+	// return a;
+	return bytehamster::util::MurmurHash64(&k, sizeof(k));
 }
 
 stxxl::stats* Stats;
@@ -354,6 +356,12 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	}
 
 #ifdef STATIC_MODE
+	{
+		std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
+		t_start_insertions;
+		std::cout << "before consolidation, time " << insertions_total.count() << "\n";
+	}
+	// return;
 	boa.consolidate_structure();
 #endif
 
@@ -488,7 +496,12 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	std::shuffle(data.begin(), data.end(), gen);
 
 #ifdef BOA_OPT
+#ifdef STATIC_MODE
+	std::string tmp_filename = "boa_interleaved_opt_static_";
+#else
 	std::string tmp_filename = "boa_interleaved_opt_";
+#endif
+
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
 	std::string tmp_filename = "boa_interleaved_buckets_";
@@ -517,7 +530,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	auto t_start = std::chrono::system_clock::now();
 
 #ifdef BOA_OPT
+#ifdef STATIC_MODE
+	std::string start_msg = "Interleaved Start BOA OPT STATIC";
+#else
 	std::string start_msg = "Interleaved Start BOA OPT";
+#endif
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
 	std::string start_msg = "Interleaved Start BOA BUCKETS";
@@ -554,6 +571,10 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	int total_processed = 0;
 	int batch_no = 0;
 
+#ifdef STATIC_MODE
+	boa.reserve_lazy_space_for_elements(size);
+#endif
+
 	while (total_processed < size)
 	{
 		++batch_no;
@@ -567,10 +588,19 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 		for (int i = total_processed; i < insert_end; ++i)
 		{
+#ifdef STATIC_MODE
+			boa.lazy_insert(std::pair<KeyType, char>(data[i], 'a'));
+#else
 			boa.insert(std::pair<KeyType, char>(data[i], 'a'));
+#endif
+
 			++n_inserted;
 		}
 		total_processed = insert_end;
+
+#ifdef STATIC_MODE
+		boa.consolidate_structure();
+#endif
 
 		auto batch_insert_details = get_reads_writes(stats_begin_batch);
 
