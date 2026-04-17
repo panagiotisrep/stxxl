@@ -214,7 +214,7 @@ typedef stxxl::boa::boa<
 > boa_type;
 #endif
 
-const int buffer_size =  BOA_BUFFER_SIZE;//BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
+const int buffer_size = BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
 
 void insertions_then_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size)
