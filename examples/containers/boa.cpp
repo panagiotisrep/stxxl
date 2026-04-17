@@ -8,9 +8,9 @@
 // #define BOA_BLOCK_SIZE (32*1024)
 // #endif
 
-#ifndef BOA_BUFFER_SIZE
-#define BOA_BUFFER_SIZE 1024
-#endif
+// #ifndef BOA_BUFFER_SIZE
+// #define BOA_BUFFER_SIZE 1024
+// #endif
 
 // #ifndef BOA_LAMBDA
 // #define BOA_LAMBDA 32
@@ -186,7 +186,7 @@ const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
 const double routing_filter_mult = ROUTING_FILTER_MULT;
 
-const int size = 200000000;
+const int size = 10000000;
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
@@ -245,8 +245,16 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
-	std::string tmp_filename = "boa_buckets_";
+	#ifdef STATIC_MODE
+		std::string tmp_filename = "boa_buckets_static_";
+	#else
+		std::string tmp_filename = "boa_buckets_";
+	#endif
 #else
+#ifdef STATIC_MODE
+	std::cout << "STATIC MODE NOT SUPPORTED FOR BOA_SEARCH_VIA_NO_BUCKETS" << std::endl;
+	exit(-1);
+#endif
 	std::string tmp_filename = "boa_no_buckets_";
 #endif
 #endif
@@ -278,7 +286,12 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
+#ifdef STATIC_MODE
+	std::string start_msg = "Start BOA BUCKETS STATIC";
+#else
 	std::string start_msg = "Start BOA BUCKETS";
+#endif
+
 #else
 	std::string start_msg = "Start BOA NO BUCKETS";
 #endif
@@ -725,8 +738,8 @@ int main()
 	{
 		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
-		int n_insertions_per_batch = 50000;
-		int k_queries_per_batch = 500;
+		int n_insertions_per_batch = 100000;
+		int k_queries_per_batch = 1000;
 		// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
 										  // k_queries_per_batch);
 	}
