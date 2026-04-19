@@ -18,9 +18,6 @@
 #include <queue>
 #include <ips2ra.hpp>
 
-// #define BOA_SEARCH_VIA_BUCKETS
-#define ROUTING_FILTER_MULT 1
-#define IN_MEMORY_SORT
 
 STXXL_BEGIN_NAMESPACE
   namespace boa
@@ -338,6 +335,7 @@ STXXL_BEGIN_NAMESPACE
         std::vector<run> m_runs;
         std::unique_ptr<routing_filter<HashType, Pages, PageSize, BlockSize>> m_routing_filter;
         uint16_t m_level;
+        bool m_dirty_routing_filter{false};
       };
 
       //! The external memory runs
@@ -696,6 +694,7 @@ STXXL_BEGIN_NAMESPACE
         tier t0;
         t0.m_routing_filter.reset(create_routing_filter(0));
         m_tiers.push_back(std::move(t0));
+        m_tiers[0].m_level = 0;
         m_tiers[0].m_runs.reserve(RunsPerTier);
 
         for (int i = 0; i < RunsPerTier; i++)
@@ -1356,18 +1355,18 @@ STXXL_BEGIN_NAMESPACE
         return false;
       }
 
-      struct move {
+      struct displacement {
         unsigned int m_from_tier{0};
         unsigned int m_to_tier{0};
         unsigned int m_from_run{0};
 
-        move(unsigned int from_tier, unsigned int to_tier, unsigned int from_run) : m_from_run(from_run),
+        displacement(unsigned int from_tier, unsigned int to_tier, unsigned int from_run) : m_from_run(from_run),
         m_from_tier(from_tier), m_to_tier(to_tier) {}
 
       };
 
-      std::vector<move> compute_old_elements_moves(std::pair<unsigned int, unsigned int> const & new_space) {
-        std::vector<move> existing_moves;
+      std::vector<displacement> compute_runs_displacements(std::pair<unsigned int, unsigned int> const & new_space) {
+        std::vector<displacement> displacements;
 
         unsigned int new_space_tier = new_space.first, new_space_run = new_space.second;
 
@@ -1375,21 +1374,23 @@ STXXL_BEGIN_NAMESPACE
           if (tier.m_level < new_space_tier) {
             for (int r=0 ; r < tier.m_runs.size() ; r++) {
               if (tier.m_runs[r].active) {
-                existing_moves.push_back({tier.m_level, tier.m_level, r});
+                displacements.push_back({tier.m_level, tier.m_level, r});
               }
             }
           }
           else if (tier.m_level == new_space_tier) {
             auto existing_runs = active_runs(tier);
             auto total_runs = new_space_run + 1 + existing_runs;
-
             if (total_runs > RunsPerTier) {
+              auto remove_runs = RunsPerTier;
+
               for (int r=0 ; r < tier.m_runs.size() ; r++) {
                 if (tier.m_runs[r].active) {
-                  existing_moves.push_back({tier.m_level, tier.m_level, r});
+                  displacements.push_back({tier.m_level, tier.m_level, r});
                   --total_runs;
                 }
-                if (total_runs == RunsPerTier) {
+                --remove_runs;
+                if (remove_runs == 0) {
                   break;
                 }
               }
@@ -1400,20 +1401,20 @@ STXXL_BEGIN_NAMESPACE
           }
         } // for (auto const & tier : m_tiers).
 
-        if (existing_moves.empty()) {
+        if (displacements.empty()) {
           return {};
         }
 
-        unsigned int existing_elements_tier_dest = existing_moves.back().m_from_tier + 1;
+        unsigned int existing_elements_tier_dest = displacements.back().m_from_tier + 1;
         if (existing_elements_tier_dest <= new_space_tier) {
           existing_elements_tier_dest = new_space_run + 1 < RunsPerTier ? new_space_tier : new_space_tier + 1;
         }
 
-        for (auto & move : existing_moves) {
+        for (auto & move : displacements) {
           move.m_to_tier = existing_elements_tier_dest;
         }
 
-        return existing_moves;
+        return displacements;
       }
 
       int first_non_active_run_in_tier(unsigned int tier) {
@@ -1426,116 +1427,164 @@ STXXL_BEGIN_NAMESPACE
         return -1;
       }
 
+      void allocate_space_for_runs(unsigned int tiers) {
+        while (m_tiers.size() < tiers) {
+          m_tiers.push_back(tier());
+          unsigned int i = m_tiers.size() - 1;
+          m_tiers[i].m_runs.reserve(RunsPerTier);
+          m_tiers[i].m_level = i;
+          m_tiers[i].m_routing_filter.reset(create_routing_filter(i));
+
+          while (m_tiers[i].m_runs.size() < RunsPerTier)
+          {
+            run r;
+            m_tiers[i].m_runs.push_back(std::move(r));
+          }
+        }
+      }
+
       /**
        *
        * @param moves
        * @return #moved elements from log
        */
-      // unsigned int move_old_elements(std::vector<move> const & moves) {
-      //   unsigned int target_tier = moves.back().m_to_tier;
-      //   if (m_tiers.size() <= target_tier)
-      //   {
-      //     m_tiers.push_back(tier());
-      //     m_tiers[target_tier].m_runs.reserve(RunsPerTier);
-      //     m_tiers[target_tier].m_level = target_tier;
-      //     m_stats.tier_to_collisions[target_tier] = 0;
-      //   }
-      //
-      //   if (m_tiers[target_tier].m_runs.size() < RunsPerTier)
-      //   {
-      //     run r;
-      //     m_tiers[target_tier].m_runs.push_back(std::move(r));
-      //   }
-      //
-      //   unsigned int old_elements{0};
-      //   for (auto const & move : moves) {
-      //     old_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size;
-      //   }
-      //   unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
-      //                                       RunsPerTier, target_tier);
-      //   if (m_lazy_insertion_log.size() + old_elements < target_tier_run_size) {
-      //     std::cout << "Error: Lazy insertion log size (" << m_lazy_insertion_log.size() << ") + old elements (" <<
-      //         old_elements << ") is less than target tier run size (" << target_tier_run_size << ")" << std::endl;
-      //     throw std::runtime_error("Error: Lazy insertion log size + old elements is less than target tier run size");
-      //   }
-      //
-      //   auto target_run = first_non_active_run_in_tier(target_tier);
-      //   if (target_run == -1) {
-      //     std::cout << "Error: No non-active run in target tier" << std::endl;
-      //     throw std::runtime_error("Error: No non-active run in target tier");
-      //   }
-      //
-      //   run& final = m_tiers[target_tier].m_runs[target_run];
-      //   final.active = true;
-      //   final.m_run_size = target_tier_run_size;
-      //   final.m_elements_number = target_tier_run_size;
-      //
-      //   m_tiers[target_tier].m_dirty_routing_filter = true;
-      //
-      //   // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
-      //   // if (m_run.size() < get_vector_size_for_n_tiers(target_tier))
-      //   // {
-      //     // m_run.resize(get_vector_size_for_n_tiers(target_tier));
-      //   // }
-      //   if (m_elements.size() < get_vector_size_for_n_tiers(target_tier))
-      //   {
-      //     m_elements.resize(get_vector_size_for_n_tiers(target_tier));
-      //   }
-      //
-      //   unsigned int moved_elements{0};
-      //   for (auto const & move : moves) {
-      //     auto offset = get_run_offset(move.m_from_tier, move.m_from_run);
-      //     auto const & run = m_run;
-      //
-      //     for (int i=0 ; i < m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size ; i++) {
-      //       m_run[target_run_offset + moved_elements] = run[offset + i];
-      //       ++moved_elements;
-      //     }
-      //
-      //     m_tiers[move.m_from_tier].m_runs[move.m_from_run].active = false;
-      //   }
-      //
-      //   auto const v = m_lazy_insertion_log;
-      //   unsigned int moved_elements_from_log = target_tier_run_size - moved_elements;
-      //   while (moved_elements < target_tier_run_size) {
-      //     m_run[target_run_offset + moved_elements] = v[moved_elements];
-      //     ++moved_elements;
-      //   }
-      //
-      //   auto it_begin = m_run.begin() + target_run_offset;
-      //   auto it_end = m_run.begin() + target_run_offset + moved_elements;
-      //   sort_vector<external_vector, run_element>(it_begin, it_end);
-      //
-      //   return moved_elements_from_log;
-      // }
+      unsigned int displace_old_runs(std::vector<displacement> const & displacements) {
+        unsigned int target_tier = displacements.back().m_to_tier;
+        allocate_space_for_runs(target_tier + 1);
+
+        unsigned int old_elements{0};
+        for (auto const & move : displacements) {
+          old_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size;
+        }
+        unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
+                                            RunsPerTier, target_tier);
+
+        if (m_lazy_insertion_log.size() + old_elements < target_tier_run_size) {
+          std::cout << "Error: Lazy insertion log size (" << m_lazy_insertion_log.size() << ") + old elements (" <<
+              old_elements << ") is less than target tier run size (" << target_tier_run_size << ")" << std::endl;
+          throw std::runtime_error("Error: Lazy insertion log size + old elements is less than target tier run size");
+        }
+
+        auto target_run = first_non_active_run_in_tier(target_tier);
+        if (target_run == -1) {
+          std::cout << "Error: No non-active run in target tier" << std::endl;
+          throw std::runtime_error("Error: No non-active run in target tier");
+        }
+#define IN_PLACE_SORT
+#ifdef IN_PLACE_SORT
+        run& final = m_tiers[target_tier].m_runs[target_run];
+        final.active = true;
+        final.m_run_size = target_tier_run_size;
+        final.m_elements_number = target_tier_run_size;
+        final.m_run.resize(target_tier_run_size);
+        auto & tmp = final.m_run;
+#else
+        external_vector tmp;
+        tmp.resize(target_tier_run_size);
+#endif
+        unsigned int displaced_elements{0};
+        unsigned int index{0};
+        bool removed_from_target_tier{false};
+
+        for (auto const & move : displacements) {
+          auto const & run = m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run;
+
+          if (move.m_from_tier == target_tier) {
+            removed_from_target_tier = true;
+          }
+
+          // for (int i=0 ; i < m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size ; i++) {
+          for (int i=0 ; i < run.size() ; i++) {
+            if (run[i].m_hash == 0) {
+              continue;
+            }
+
+            tmp[index++] = run[i];
+            ++displaced_elements;
+          }
+
+          m_tiers[move.m_from_tier].m_runs[move.m_from_run].active = false;
+          m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run.resize(0);
+          m_tiers[move.m_from_tier].m_dirty_routing_filter = true;
+        }
+
+        if (removed_from_target_tier) {
+          auto & tier = m_tiers[target_tier];
+          for (int i=0 ; i < tier.m_runs.size() ; ++i) {
+            if (!tier.m_runs[i].active) {
+              int first_active_run = -1;
+
+              for (int j=i+1 ; j < tier.m_runs.size() ; ++j) {
+                if (tier.m_runs[j].active) {
+                  first_active_run = j;
+                  break;
+                }
+              }
+              if (first_active_run == -1) {
+                break;
+              }
+              else {
+                std::cout << "Error: First active run is not the first active run in the tier" << std::endl;
+                std::throw_with_nested(std::runtime_error("Error: First active run is not the first active run in the tier"));
+                // auto tmp = std::move(tier.m_runs[first_active_run]);
+                // tier.m_runs[first_active_run] = std::move(tier.m_runs[i]);
+                // tier.m_runs[i] = std::move(tmp);
+              }
+            }
+          }
+        }
+
+        auto const v = m_lazy_insertion_log;
+        unsigned int consumed_log_elements = target_tier_run_size - displaced_elements;
+        for (int i=0 ; i < consumed_log_elements ; i++) {
+          tmp[index++] = v[i];
+        }
+
+        sort_vector<external_vector, run_element>(tmp.begin(), tmp.end());
+
+#ifdef IN_PLACE_SORT
+        add_in_place_sorted_run(target_tier, target_run);
+#else
+        sorted_vector_to_run<run_element, external_vector>(target_tier,
+        target_run,
+        tmp,
+        0,
+        [](run_element const &e) {
+        return e.m_hash;
+        });
+#endif
+
+        return consumed_log_elements;
+      }
 
 
       /**
        *
        * @return #moved items from log
        */
-      unsigned int make_space_for_new_inserts(std::pair<unsigned int, unsigned int> new_space) {
-        // auto old_elements_moves = compute_old_elements_moves(new_space);
-        auto moved_elements = 0;
+      unsigned int promote_existing_runs(std::pair<unsigned int, unsigned int> new_space) {
+        auto displacements = compute_runs_displacements(new_space);
+        auto consumed_log_elements = 0;
 
-        // if (!old_elements_moves.empty()) {
-        //   moved_elements = move_old_elements(old_elements_moves);
-        // }
+        if (!displacements.empty()) {
+          consumed_log_elements = displace_old_runs(displacements);
+        }
 
         auto highest_tier = new_space.first;
         auto last_run = new_space.second;
 
+        allocate_space_for_runs(highest_tier+1);
         for (int at_tier=0 ; at_tier <= highest_tier ; at_tier++) {
-          if (m_tiers.size() <= at_tier)
-          {
-            m_tiers.push_back(tier());
-            m_tiers[at_tier].m_runs.reserve(RunsPerTier);
-            m_tiers[at_tier].m_level = at_tier;
-            m_stats.tier_to_collisions[at_tier] = 0;
-            if (!m_tiers[at_tier].m_routing_filter) {
-              m_tiers[at_tier].m_routing_filter.reset(create_routing_filter(at_tier));
-            }
-          }
+          // if (m_tiers.size() <= at_tier)
+          // {
+          //   m_tiers.push_back(tier());
+          //   m_tiers[at_tier].m_runs.reserve(RunsPerTier);
+          //   m_tiers[at_tier].m_level = at_tier;
+          //   m_stats.tier_to_collisions[at_tier] = 0;
+          //   if (!m_tiers[at_tier].m_routing_filter) {
+          //     m_tiers[at_tier].m_routing_filter.reset(create_routing_filter(at_tier));
+          //   }
+          // }
 
           unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                   RunsPerTier, at_tier);
@@ -1557,7 +1606,310 @@ STXXL_BEGIN_NAMESPACE
         //   m_elements.resize(get_vector_size_for_n_tiers(highest_tier));
         // }
 
-        return moved_elements;
+        return consumed_log_elements;
+      }
+
+      template<class ElementType, class InputLog, class HashExtractor>
+      unsigned int sorted_vector_to_run(unsigned int at_tier,
+                                int run_index,
+                                InputLog const &log,
+                                unsigned int log_offset,
+                                HashExtractor hash_extractor) {
+        unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(RunsPerTier, at_tier);
+        run &final = m_tiers[at_tier].m_runs[run_index];
+        auto const &routing_filter = m_tiers[at_tier].m_routing_filter;
+
+        final.active = true;
+        final.m_elements_number = target_tier_run_size;
+
+        auto min = hash_extractor(log[log_offset]);
+        auto max = hash_extractor(log[log_offset + target_tier_run_size - 1]);
+
+        // std::cout << "Min " << min << " Max " << max << std::endl;
+        // std::cout << max - min << " " << "max - min" << std::endl;
+
+        const unsigned int intervals_no = get_buckets_no(target_tier_run_size);
+        const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
+        auto bucket_index = [&interval_size, &min, &intervals_no](HashType const &h) {
+          auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
+          // ensure max value falls in the last interval
+          if (index >= intervals_no) {
+            index = intervals_no - 1;
+          }
+          return index;
+        };
+
+        // run_element min_key;
+        // min_key.m_hash = std::numeric_limits<HashType>::max();
+        std::vector<unsigned int> buckets_size(intervals_no, 0);
+
+        for (uint i = 0; i < target_tier_run_size; i++) {
+          auto h = hash_extractor(log[log_offset + i]);
+          if (h == 0) {
+            continue;
+          }
+          ++buckets_size[bucket_index(h)];
+        }
+
+        const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
+        final.m_run_size = target_tier_run_size;//max_bucket_size * intervals_no;
+        final.m_bucket_size = max_bucket_size;
+        final.m_run.resize(max_bucket_size * intervals_no);
+
+        final.m_max_hash = max;
+        final.m_min_hash = min;
+        final.m_bucket_interval = interval_size;
+        final.m_buckets_no = intervals_no;
+
+        unsigned int at_bucket{0};
+        unsigned int added{0};
+        size_t total_added{0};
+        run_element empty_element;
+        unsigned int index{0};
+        empty_element.m_hash = 0;
+
+        for (uint i = 0; i < target_tier_run_size; i++) {
+          if (index >= final.m_run.size()) {
+            std::cout << "index >= final.m_run.size()" << std::endl;
+            exit(0);
+          }
+
+          auto elem = run_element(log[log_offset++]);
+
+          while (bucket_index(elem.m_hash) != at_bucket) {
+            final.m_run[index++] = empty_element; // fill bucket
+            // index++;
+            // empty_elements_added++;
+            ++added;
+            ++total_added;
+            if (added == max_bucket_size) {
+              ++at_bucket;
+              added = 0;
+            }
+          }
+
+          auto prev_route = routing_filter->get_run_index(elem.m_hash);
+          if (prev_route.first > run_index) {
+            prev_route.first = 0;
+            prev_route.second = 0;
+            std::cout << "Error: Routing filter is not consistent: run_index=" << run_index << ", prev_route.first=" << prev_route.first << std::endl;
+            exit(-1);
+          }
+          elem.m_prev_run = prev_route.first;
+          // elem.m_prev_index_in_run = prev_route.second;
+          routing_filter->insert(run_index, index, elem.m_hash);
+
+          final.m_run[index++] = elem;
+
+          ++added;
+
+          if (added == max_bucket_size) {
+            ++at_bucket;
+            added = 0;
+          }
+        } // for (uint i=0 ; i <target_tier_run_size ; i++).
+
+        while (index < final.m_run.size()) {
+          final.m_run[index++] = empty_element;
+        }
+
+        return log_offset;
+      }
+
+      /**
+       * at tier, run index there is an added sorted vector, make it boa run
+       * @param at_tier
+       * @param run_index
+       */
+      void add_in_place_sorted_run(unsigned int at_tier, int run_index) {
+        unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(RunsPerTier, at_tier);
+        auto const &routing_filter = m_tiers[at_tier].m_routing_filter;
+
+        auto & final = m_tiers[at_tier].m_runs[run_index];
+        final.active = true;
+        final.m_elements_number = target_tier_run_size;
+
+        auto min = final.m_run[0].m_hash;
+        auto max = final.m_run[target_tier_run_size - 1].m_hash;
+
+        const unsigned int intervals_no = get_buckets_no(target_tier_run_size);
+        const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
+        auto bucket_index = [&interval_size, &min, &intervals_no](HashType const &h) {
+          auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
+          // ensure max value falls in the last interval
+          if (index >= intervals_no) {
+            index = intervals_no - 1;
+          }
+          return index;
+        };
+
+        // run_element min_key;
+        // min_key.m_hash = std::numeric_limits<HashType>::max();
+        std::vector<unsigned int> buckets_size(intervals_no, 0);
+        auto const & u = final.m_run;
+        for (uint i = 0; i < target_tier_run_size; i++) {
+          auto h = u[i].m_hash;
+          if (h == 0) {
+            continue;
+          }
+          ++buckets_size[bucket_index(h)];
+        }
+
+        const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
+        final.m_run_size = target_tier_run_size;//max_bucket_size * intervals_no;
+        final.m_bucket_size = max_bucket_size;
+        final.m_run.resize(max_bucket_size * intervals_no);
+
+        final.m_max_hash = max;
+        final.m_min_hash = min;
+        final.m_bucket_interval = interval_size;
+        final.m_buckets_no = intervals_no;
+
+        unsigned int at_bucket{0};
+        unsigned int added{0};
+        size_t total_added{0};
+        run_element empty_element;
+        // unsigned int index{0};
+        empty_element.m_hash = 0;
+
+        std::deque<run_element> q;
+
+        // queue.push_back(run_element(final.m_run[0]));
+
+        // std::vector<std::size_t> cnt(buckets_size.size(), 0);
+        //
+        // for (unsigned int i = 0; i < target_tier_run_size; i++) {
+        //   auto& cur = final.m_run[i];
+        //   if (cur.m_hash != 0) {
+        //     std::size_t b = bucket_index(cur.m_hash);
+        //
+        //     if (b >= buckets_size.size()) {
+        //       std::cout << "bucket out of range: i=" << i
+        //                 << " hash=" << cur.m_hash
+        //                 << " bucket=" << b
+        //                 << " buckets_size.size()=" << buckets_size.size()
+        //                 << std::endl;
+        //       throw std::runtime_error("bucket out of range");
+        //     }
+        //
+        //     cnt[b]++;
+        //   }
+        // }
+
+        // bool first = true;
+        // std::size_t prev_b = 0;
+        //
+        // for (unsigned int i = 0; i < target_tier_run_size; i++) {
+        //   auto& cur = final.m_run[i];
+        //   if (cur.m_hash == 0) continue;
+        //
+        //   std::size_t b = bucket_index(cur.m_hash);
+        //
+        //   if (!first && b < prev_b) {
+        //     std::cout << "not sorted at i=" << i
+        //               << " prev_bucket=" << prev_b
+        //               << " current_bucket=" << b
+        //               << " hash=" << cur.m_hash
+        //               << std::endl;
+        //     throw std::runtime_error("input not sorted by bucket");
+        //   }
+        //
+        //   prev_b = b;
+        //   first = false;
+        // }
+        //
+        // for (std::size_t b = 0; b < cnt.size(); b++) {
+        //   if (cnt[b] > interval_size) {
+        //     std::cout << "overflow in bucket " << b
+        //               << ": count=" << cnt[b]
+        //               << " interval_size=" << interval_size
+        //               << std::endl;
+        //     throw std::runtime_error("bucket capacity overflow");
+        //   }
+        // }
+
+        for (unsigned int i = 0; i < final.m_run.size(); i++) {
+          const std::size_t cur_bin = i / max_bucket_size;
+
+          // Step 1: consume original input at this position, if any.
+          if (i < target_tier_run_size) {
+            auto cur = final.m_run[i];
+            if (cur.m_hash != 0) {
+              const std::size_t b = bucket_index(cur.m_hash);
+
+              if (b >= buckets_size.size()) {
+                throw std::runtime_error("bucket(elem) out of range");
+              }
+
+              // Optional safety check: input must be sorted by bucket.
+              if (!q.empty() && bucket_index(q.back().m_hash) > b) {
+                throw std::runtime_error("input is not sorted by bucket");
+              }
+
+              q.push_back(std::move(cur));
+            }
+            else {
+              std::cout << "Error: hash is 0" << std::endl;
+              throw std::runtime_error("hash is 0");
+            }
+          }
+
+          // Step 2: write the correct value for this slot.
+          // Step 2: write output for this slot.
+            if (!q.empty() && bucket_index(q.front().m_hash) == cur_bin) {
+              auto elem = q.front();
+
+              auto prev_route = routing_filter->get_run_index(elem.m_hash);
+              if (prev_route.first > run_index) {
+                std::cout << "Error: Routing filter is not consistent: run_index="
+                          << run_index
+                          << ", prev_route.first=" << prev_route.first
+                          << std::endl;
+                exit(-1);
+              }
+
+              elem.m_prev_run = prev_route.first;
+              routing_filter->insert(run_index, i, elem.m_hash);
+
+              final.m_run[i] = elem;
+              q.pop_front();
+            } else {
+              final.m_run[i] = empty_element;
+            }
+
+          // auto elem = queue.front();
+          //
+          // if (bucket_index(elem.m_hash) == at_bucket) {
+          //   auto prev_route = routing_filter->get_run_index(elem.m_hash);
+          //   if (prev_route.first > run_index) {
+          //     prev_route.first = 0;
+          //     prev_route.second = 0;
+          //     std::cout << "Error: Routing filter is not consistent: run_index=" << run_index << ", prev_route.first=" << prev_route.first << std::endl;
+          //     exit(-1);
+          //   }
+          //   elem.m_prev_run = prev_route.first;
+          //   routing_filter->insert(run_index, i, elem.m_hash);
+          //
+          //   queue.pop_front();
+          //   if (i+1 < target_tier_run_size) {
+          //     queue.push_back(run_element(final.m_run[i+1]));
+          //   }
+          //   final.m_run[i] = elem;
+          //   ++added;
+          // } // if (bucket_index(elem.m_hash) == at_bucket).
+          // else {
+          //   ++added;
+          //   if (i < target_tier_run_size) {
+          //     queue.push_back(run_element(final.m_run[i]));
+          //   }
+          //   final.m_run[i] = empty_element; // fill bucket
+          // }
+        } // for (uint i=0 ; i <target_tier_run_size ; i++).
+
+        if (!q.empty()) {
+          std::cout << "Error: q.size() != 0" << std::endl;
+          throw std::runtime_error("Error: q.size() != 0");
+        }
       }
 
       void flush_from_log(unsigned int moved_first_elements) {
@@ -1571,13 +1923,24 @@ STXXL_BEGIN_NAMESPACE
         auto final_layout = compute_layout_for_lazy_insertion_log(remaining_elements);
 
         for (auto tier_layout : final_layout) {
-          // if (!m_tiers[tier_layout.first].m_empty_filter) {
-            // m_tiers[tier_layout.first].reset();
-          // }
+          if (m_tiers[tier_layout.first].m_dirty_routing_filter) {
+            auto last_tier = final_layout.rbegin()->first;
+
+            if (tier_layout.first <= last_tier) {
+              m_tiers[tier_layout.first].m_routing_filter->reset();
+              m_tiers[tier_layout.first].m_dirty_routing_filter = false;
+            }
+            else {
+              // auto start = std::chrono::high_resolution_clock::now();
+              // update_routing_filter_translated_runs(m_tiers[tier_layout.first]);
+              // auto end = std::chrono::high_resolution_clock::now();
+              // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+              // std::cout << "update_routing_filter completed in " << duration.count() << " milliseconds" << std::endl;
+            }
+          }
 
           // if (active_runs(m_tiers[tier_layout.first]) > 0) {
             // update_routing_filter(m_tiers[tier_layout.first]);
-            // m_tiers[tier_layout.first].m_dirty_routing_filter = false;
           // }
 
           for (int at_run=0 ; at_run <= tier_layout.second ; at_run++) {
@@ -1593,133 +1956,23 @@ STXXL_BEGIN_NAMESPACE
               throw std::runtime_error("Error: Tier run is active");
             }
 
-            // m_tiers[tier_layout.first].m_dirty_routing_filter = true;
-
-            unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
-                                 RunsPerTier, tier_layout.first);
-            run& final = m_tiers[tier_layout.first].m_runs[first_inactive_run];
-            auto const & routing_filter = m_tiers[tier_layout.first].m_routing_filter;
-
-            final.active = true;
-            final.m_elements_number = target_tier_run_size;
-
-            // if (m_run.size() < get_vector_size_for_n_tiers(tier_layout.first))
-            // {
-            //   m_run.resize(get_vector_size_for_n_tiers(tier_layout.first));
-            // }
-            if (m_elements.size() < get_vector_size_for_n_tiers(tier_layout.first))
-            {
-              m_elements.resize(get_vector_size_for_n_tiers(tier_layout.first));
-            }
 
 #ifdef IN_MEMORY_SORT
             auto min = log[total_moved_elements].second.first;
             auto max = log[total_moved_elements + target_tier_run_size - 1].second.first;
 #else
-            auto min = log[total_moved_elements].m_hash;
-            auto max = log[total_moved_elements + target_tier_run_size - 1].m_hash;
-#endif
-            // std::cout << "Min " << min << " Max " << max << std::endl;
-            // std::cout << max - min << " " << "max - min" << std::endl;
-
-            const unsigned int intervals_no = get_buckets_no(target_tier_run_size);
-            const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
-            auto bucket_index = [&interval_size, &min, &intervals_no](HashType const& h)
-            {
-              auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
-              // ensure max value falls in the last interval
-              if (index >= intervals_no)
-              {
-                index = intervals_no - 1;
-              }
-              return index;
-            };
-
-            // run_element min_key;
-            // min_key.m_hash = std::numeric_limits<HashType>::max();
-            std::vector<unsigned int> buckets_size(intervals_no, 0);
-
-            for (uint i=0 ; i <target_tier_run_size ; i++) {
-#ifdef IN_MEMORY_SORT
-              auto h = log[total_moved_elements + i].second.first;
-#else
-              auto h = log[total_moved_elements + i].m_hash;
+            total_moved_elements = sorted_vector_to_run<lazy_run_element, external_lazy_run_item_vector>(tier_layout.first,
+              first_inactive_run,
+              log,
+              total_moved_elements,
+              [](lazy_run_element const &log) {
+                return log.m_hash;
+              });
+            // auto min = log[total_moved_elements].m_hash;
+            // auto max = log[total_moved_elements + target_tier_run_size - 1].m_hash;
 #endif
 
-              if (h == 0)
-              {
-                continue;
-              }
-              ++buckets_size[bucket_index(h)];
-            }
 
-            const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-            final.m_run_size = max_bucket_size * intervals_no;
-            final.m_bucket_size = max_bucket_size;
-            final.m_run.resize(final.m_run_size);
-
-            final.m_max_hash = max;
-            final.m_min_hash = min;
-            final.m_bucket_interval = interval_size;
-            final.m_buckets_no = intervals_no;
-
-            unsigned int at_bucket{0};
-            unsigned int added{0};
-            size_t total_added{0};
-            run_element empty_element;
-            unsigned int index{0};
-            empty_element.m_hash = 0;
-
-            for (uint i=0 ; i <target_tier_run_size ; i++) {
-              if (index >= final.m_run.size())
-              {
-                std::cout << "index >= final.m_run.size()" << std::endl;
-                exit(0);
-              }
-
-              auto elem = run_element(log[total_moved_elements++]);
-
-              while (bucket_index(elem.m_hash) != at_bucket)
-              {
-                final.m_run[index++] = empty_element; // fill bucket
-                // index++;
-                // empty_elements_added++;
-                ++added;
-                ++total_added;
-                if (added == max_bucket_size)
-                {
-                  ++at_bucket;
-                  added = 0;
-                }
-              }
-
-              auto prev_route = routing_filter->get_run_index(elem.m_hash);
-              if (prev_route.first > first_inactive_run)
-              {
-                prev_route.first = 0;
-                prev_route.second = 0;
-                std::cout << "Error: Routing filter is not consistent" << std::endl;
-                exit(-1);
-              }
-              elem.m_prev_run = prev_route.first;
-              // elem.m_prev_index_in_run = prev_route.second;
-              routing_filter->insert(first_inactive_run, index, elem.m_hash);
-
-              final.m_run[index++] = elem;
-
-              ++added;
-
-              if (added == max_bucket_size)
-              {
-                ++at_bucket;
-                added = 0;
-              }
-            } // for (uint i=0 ; i <target_tier_run_size ; i++).
-
-            while (index < final.m_run.size())
-            {
-              final.m_run[index++] = empty_element;
-            }
           } // for (int at_run=0 ; at_run <= tier_layout.second ; at_run++).
         } // for (auto tier_layout : final_layout).
 
@@ -1731,35 +1984,32 @@ STXXL_BEGIN_NAMESPACE
 
       void flush_to_boa_impl() {
 #ifdef IN_MEMORY_SORT
+        auto & log = m_in_memory_lazy_table;
+#else
+        auto & log = m_lazy_insertion_log;
+#endif
+
+#ifdef IN_MEMORY_SORT
         std::cout << "Sorting lazy insertion log" << std::endl;
-        std::cout << "Log size: " << m_in_memory_lazy_table.size() << std::endl;
-
+        std::cout << "Log size: " << log.size() << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
-
         auto hashFunction = [](const std::pair<size_t, cache_element> &x) -> HashType {
           return x.second.first;
         };
-
         ips2ra::sort(m_in_memory_lazy_table.begin(), m_in_memory_lazy_table.end(), hashFunction);
-
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         std::cout << "Sort completed in " << duration.count() << " milliseconds" << std::endl;
-
-        auto new_space = compute_space_for_lazy_insertion_log(m_in_memory_lazy_table.size());
-        auto moved_from_log = make_space_for_new_inserts(new_space);
-        flush_from_log(moved_from_log);
-        std::cout << "Flushed lazy insertion log size: " << m_in_memory_lazy_table.size() << std::endl;
-        m_in_memory_lazy_table.clear();
 #else
         sort_vector<external_lazy_run_item_vector, lazy_run_element>(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
-        auto new_space = compute_space_for_lazy_insertion_log(m_lazy_insertion_log.size());
-        auto moved_from_log = make_space_for_new_inserts(new_space);
-        flush_from_log(moved_from_log);
-        std::cout << "Flushed lazy insertion log size: " << m_lazy_insertion_log.size() << std::endl;
-        m_lazy_insertion_log.clear();
 #endif
-        compact_tiers();
+
+        auto new_space = compute_space_for_lazy_insertion_log(log.size());
+        auto consumed_log_elements = promote_existing_runs(new_space);
+        flush_from_log(consumed_log_elements);
+        std::cout << "Flushed lazy insertion log size: " << log.size() << std::endl;
+        log.clear();
+
         // update_routing_filters();
       }
 
@@ -1775,6 +2025,42 @@ STXXL_BEGIN_NAMESPACE
           m_in_memory_table.clear();
         }
       }
+
+      void update_routing_filter_translated_runs(tier& t)
+      {
+        t.m_dirty_routing_filter = false;
+        t.m_routing_filter->reset();
+
+        for (int r=0 ; r<t.m_runs.size() ; ++r) {
+          auto const& run = t.m_runs[r];
+          if (!run.active) {
+            break;
+          }
+
+          auto& v = t.m_runs[r].m_run;
+
+          for (int i=0 ; i<v.size() ; ++i) {
+            auto elem = v[i];
+
+            if (elem.m_hash == 0) {
+              continue;
+            }
+            
+            auto prev_route = t.m_routing_filter->get_run_index(elem.m_hash);
+            if (prev_route.first > r)
+            {
+              prev_route.first = 0;
+              prev_route.second = 0;
+            }
+            elem.m_prev_run = prev_route.first;
+            t.m_routing_filter->insert(r, i, elem.m_hash);
+
+            v[i] = elem;
+          }
+
+        } // for (int r=0 ; r<RunsPerTier ; ++r).
+      }
+
     };
   } // namespace boa.
 
