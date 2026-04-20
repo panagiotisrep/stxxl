@@ -16,12 +16,17 @@
 // #define BOA_LAMBDA 32
 // #endif
 
+#define ROUTING_FILTER_MULT 1
 // #define BOA_OPT
-// #define STATIC_MODE
+#define BOA_SEARCH_VIA_BUCKETS
+// #define IN_MEMORY_SORT
+// #define ONLINE_SUSPENDED_MODE
+// #define SORT_BASED_MATERIALIZATION
+// #define HYBRID_MATERIALIZATION
+
 #define EXPERIMENTS_NO 1
 #define IO_DETAILS
 
-// #define ROUTING_FILTER_MULT 1
 
 #include <iostream>
 #include <stxxl/bits/utils/hash.h>
@@ -186,7 +191,7 @@ const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
 const double routing_filter_mult = ROUTING_FILTER_MULT;
 
-const int size = 200000000;
+const int size = 1000000000;
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
@@ -237,7 +242,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #ifdef BOA_OPT
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::string tmp_filename = "boa_opt_static_";
 #else
 	std::string tmp_filename = "boa_opt_";
@@ -245,13 +250,13 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
-	#ifdef STATIC_MODE
+	#ifdef ONLINE_SUSPENDED_MODE
 		std::string tmp_filename = "boa_buckets_static_";
 	#else
 		std::string tmp_filename = "boa_buckets_";
 	#endif
 #else
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::cout << "STATIC MODE NOT SUPPORTED FOR BOA_SEARCH_VIA_NO_BUCKETS" << std::endl;
 	exit(-1);
 #endif
@@ -278,7 +283,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #ifdef BOA_OPT
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Start BOA OPT STATIC";
 #else
 	std::string start_msg = "Start BOA OPT";
@@ -286,7 +291,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Start BOA BUCKETS STATIC";
 #else
 	std::string start_msg = "Start BOA BUCKETS";
@@ -330,7 +335,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 	auto start_iteration = std::chrono::high_resolution_clock::now();
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	boa.reserve_lazy_space_for_elements(size);
 #endif
 
@@ -361,14 +366,14 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 			boa.reset_merges_occurred();
 			start_iteration = std::chrono::high_resolution_clock::now();
 		}
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 		boa.lazy_insert(std::pair<unsigned long, char>(d, 'a'));
 #else
 		boa.insert(std::pair<unsigned long, char>(d, 'a'));
 #endif
 	}
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	{
 		std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
 		t_start_insertions;
@@ -509,7 +514,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	std::shuffle(data.begin(), data.end(), gen);
 
 #ifdef BOA_OPT
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::string tmp_filename = "boa_interleaved_opt_static_";
 #else
 	std::string tmp_filename = "boa_interleaved_opt_";
@@ -517,8 +522,14 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
-	std::string tmp_filename = "boa_interleaved_buckets_";
+
+#ifdef ONLINE_SUSPENDED_MODE
+	std::string tmp_filename = "boa_interleaved_buckets_static_";
 #else
+	std::string tmp_filename = "boa_interleaved_buckets_";
+#endif
+
+	#else
 	std::string tmp_filename = "boa_interleaved_no_buckets_";
 #endif
 #endif
@@ -543,14 +554,18 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	auto t_start = std::chrono::system_clock::now();
 
 #ifdef BOA_OPT
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Interleaved Start BOA OPT STATIC";
 #else
 	std::string start_msg = "Interleaved Start BOA OPT";
 #endif
 #else
 #ifdef BOA_SEARCH_VIA_BUCKETS
+#ifdef ONLINE_SUSPENDED_MODE
+	std::string start_msg = "Interleaved Start BOA BUCKETS STATIC";
+#else
 	std::string start_msg = "Interleaved Start BOA BUCKETS";
+#endif
 #else
 	std::string start_msg = "Interleaved Start BOA NO BUCKETS";
 #endif
@@ -584,7 +599,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	int total_processed = 0;
 	int batch_no = 0;
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 	boa.reserve_lazy_space_for_elements(size);
 #endif
 
@@ -601,7 +616,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 		for (int i = total_processed; i < insert_end; ++i)
 		{
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 			boa.lazy_insert(std::pair<KeyType, char>(data[i], 'a'));
 #else
 			boa.insert(std::pair<KeyType, char>(data[i], 'a'));
@@ -611,7 +626,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 		}
 		total_processed = insert_end;
 
-#ifdef STATIC_MODE
+#ifdef ONLINE_SUSPENDED_MODE
 		boa.consolidate_structure();
 #endif
 
@@ -736,12 +751,12 @@ int main()
 {
 	for (int i = 0; i < EXPERIMENTS_NO; ++i)
 	{
-		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
+		// insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
-		int n_insertions_per_batch = 100000;
+		int n_insertions_per_batch = 10000000;
 		int k_queries_per_batch = 1000;
-		// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-										  // k_queries_per_batch);
+		insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+										  k_queries_per_batch);
 	}
 
 	// n_insertions_per_batch = 50000;

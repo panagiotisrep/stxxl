@@ -1235,12 +1235,13 @@ STXXL_BEGIN_NAMESPACE
       external_lazy_run_item_vector m_lazy_insertion_log;
 
       void minor_flush_to_log_vector() {
-        // TODO does this help stxxl sort?
-        // std::sort(m_in_memory_table.begin(), m_in_memory_table.end(), [](cache_element const& a, cache_element const& b)
-        // {
-        //   HashCompare cmp{};
-        //   return cmp(a.first, b.first);
-        // });
+#if !defined(SORT_BASED_MATERIALIZATION) && !defined(HYBRID_MATERIALIZATION)
+        std::sort(m_in_memory_table.begin(), m_in_memory_table.end(),
+                  [](cache_element const &a, cache_element const &b) {
+                    HashCompare cmp{};
+                    return cmp(a.first, b.first);
+                  });
+#endif
 
         // if (m_elements.size() < get_vector_size_for_n_tiers(0))
         // {
@@ -1454,7 +1455,7 @@ STXXL_BEGIN_NAMESPACE
 
         unsigned int old_elements{0};
         for (auto const & move : displacements) {
-          old_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size;
+          old_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_elements_number;
         }
         unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                             RunsPerTier, target_tier);
@@ -1470,7 +1471,9 @@ STXXL_BEGIN_NAMESPACE
           std::cout << "Error: No non-active run in target tier" << std::endl;
           throw std::runtime_error("Error: No non-active run in target tier");
         }
-#define IN_PLACE_SORT
+
+#ifdef SORT_BASED_MATERIALIZATION
+// #define IN_PLACE_SORT
 #ifdef IN_PLACE_SORT
         run& final = m_tiers[target_tier].m_runs[target_run];
         final.active = true;
@@ -1544,15 +1547,91 @@ STXXL_BEGIN_NAMESPACE
 
 #ifdef IN_PLACE_SORT
         add_in_place_sorted_run(target_tier, target_run);
-#else
+#else //IN_PLACE_SORT
+
+        auto flush_start = std::chrono::high_resolution_clock::now();
+
         sorted_vector_to_run<run_element, external_vector>(target_tier,
-        target_run,
-        tmp,
-        0,
-        [](run_element const &e) {
-        return e.m_hash;
-        });
-#endif
+            target_run,
+            tmp,
+            0,
+            [](run_element const &e) {
+            return e.m_hash;
+            });
+
+        auto flush_end = std::chrono::high_resolution_clock::now();
+        auto flush_duration = std::chrono::duration_cast<std::chrono::milliseconds>(flush_end - flush_start);
+        std::cout << "sorted_vector_to_run completed in " << flush_duration.count() << " milliseconds" << std::endl;
+
+#endif // IN_PLACE_SORT
+#else // SORT_BASED_MATERIALIZATION
+
+        unsigned int displaced_elements{0};
+        unsigned int index{0};
+        bool removed_from_target_tier{false};
+
+        std::vector<run*> displaced_runs;
+
+        for (auto const & move : displacements) {
+          if (move.m_from_tier == target_tier) {
+            removed_from_target_tier = true;
+          }
+
+          displaced_elements += m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_elements_number;
+          // for (int i=0 ; i < m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run_size ; i++) {
+          displaced_runs.push_back(&m_tiers[move.m_from_tier].m_runs[move.m_from_run]);
+        }
+
+        if (removed_from_target_tier) {
+          auto & tier = m_tiers[target_tier];
+          for (int i=0 ; i < tier.m_runs.size() ; ++i) {
+            if (!tier.m_runs[i].active) {
+              int first_active_run = -1;
+
+              for (int j=i+1 ; j < tier.m_runs.size() ; ++j) {
+                if (tier.m_runs[j].active) {
+                  first_active_run = j;
+                  break;
+                }
+              }
+              if (first_active_run == -1) {
+                break;
+              }
+              else {
+                std::cout << "Error: First active run is not the first active run in the tier" << std::endl;
+                std::throw_with_nested(std::runtime_error("Error: First active run is not the first active run in the tier"));
+                // auto tmp = std::move(tier.m_runs[first_active_run]);
+                // tier.m_runs[first_active_run] = std::move(tier.m_runs[i]);
+                // tier.m_runs[i] = std::move(tmp);
+              }
+            }
+          }
+        }
+
+        std::vector<size_t> lazy_runs_beginnings;
+        unsigned int consumed_log_elements = target_tier_run_size - displaced_elements;
+        for (int i=0 ; i < consumed_log_elements ; i+=m_in_memory_table_max_size) {
+          lazy_runs_beginnings.push_back(i);
+        }
+
+
+        auto flush_start = std::chrono::high_resolution_clock::now();
+
+        merge_runs(displaced_runs, lazy_runs_beginnings, target_tier, target_run);
+        std::cout << "starting merge runs" << std::endl;
+
+        auto flush_end = std::chrono::high_resolution_clock::now();
+        auto flush_duration = std::chrono::duration_cast<std::chrono::milliseconds>(flush_end - flush_start);
+        std::cout << "merge_runs completed in " << flush_duration.count() << " milliseconds" << std::endl;
+
+
+        for (auto const & move : displacements) {
+          m_tiers[move.m_from_tier].m_runs[move.m_from_run].active = false;
+          m_tiers[move.m_from_tier].m_runs[move.m_from_run].m_run.resize(0);
+          m_tiers[move.m_from_tier].m_dirty_routing_filter = true;
+        }
+
+#endif // SORT_BASED_MATERIALIZATION
 
         return consumed_log_elements;
       }
@@ -1652,7 +1731,8 @@ STXXL_BEGIN_NAMESPACE
         }
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-        final.m_run_size = target_tier_run_size;//max_bucket_size * intervals_no;
+        final.m_run_size = max_bucket_size * intervals_no;
+        final.m_elements_number = target_tier_run_size;
         final.m_bucket_size = max_bucket_size;
         final.m_run.resize(max_bucket_size * intervals_no);
 
@@ -1756,7 +1836,8 @@ STXXL_BEGIN_NAMESPACE
         }
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-        final.m_run_size = target_tier_run_size;//max_bucket_size * intervals_no;
+        final.m_run_size = max_bucket_size * intervals_no;
+        final.m_elements_number = target_tier_run_size;
         final.m_bucket_size = max_bucket_size;
         final.m_run.resize(max_bucket_size * intervals_no);
 
@@ -1922,7 +2003,7 @@ STXXL_BEGIN_NAMESPACE
         auto remaining_elements = log.size() - total_moved_elements;
         auto final_layout = compute_layout_for_lazy_insertion_log(remaining_elements);
 
-        for (auto tier_layout : final_layout) {
+        for (auto tier_layout : final_layout) { //TODO reverse order
           if (m_tiers[tier_layout.first].m_dirty_routing_filter) {
             auto last_tier = final_layout.rbegin()->first;
 
@@ -1956,7 +2037,7 @@ STXXL_BEGIN_NAMESPACE
               throw std::runtime_error("Error: Tier run is active");
             }
 
-
+#if defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
 #ifdef IN_MEMORY_SORT
             auto min = log[total_moved_elements].second.first;
             auto max = log[total_moved_elements + target_tier_run_size - 1].second.first;
@@ -1972,6 +2053,22 @@ STXXL_BEGIN_NAMESPACE
             // auto max = log[total_moved_elements + target_tier_run_size - 1].m_hash;
 #endif
 
+#else // defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
+
+            std::vector<size_t> lazy_runs_beginnings;
+            std::vector<run*> displaced_runs;
+            int target_tier_run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_layout.first);
+            if (target_tier_run_size > log.size() - total_moved_elements) {
+              std::cout << "target_tier_run_size is larger than available elements in log" << std::endl;
+              std::throw_with_nested(std::runtime_error("Error: target_tier_run_size is larger than available elements in log"));
+            }
+            for (int i=0 ; i < target_tier_run_size ; i+=m_in_memory_table_max_size) {
+              lazy_runs_beginnings.push_back(total_moved_elements + i);
+            }
+            total_moved_elements += target_tier_run_size;
+
+            merge_runs(displaced_runs, lazy_runs_beginnings, tier_layout.first, first_inactive_run);
+#endif // defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
 
           } // for (int at_run=0 ; at_run <= tier_layout.second ; at_run++).
         } // for (auto tier_layout : final_layout).
@@ -1989,6 +2086,7 @@ STXXL_BEGIN_NAMESPACE
         auto & log = m_lazy_insertion_log;
 #endif
 
+#if defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
 #ifdef IN_MEMORY_SORT
         std::cout << "Sorting lazy insertion log" << std::endl;
         std::cout << "Log size: " << log.size() << std::endl;
@@ -2003,13 +2101,20 @@ STXXL_BEGIN_NAMESPACE
 #else
         sort_vector<external_lazy_run_item_vector, lazy_run_element>(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
 #endif
+#endif // SORT_BASED_MATERIALIZATION
 
         auto new_space = compute_space_for_lazy_insertion_log(log.size());
         auto consumed_log_elements = promote_existing_runs(new_space);
-        flush_from_log(consumed_log_elements);
-        std::cout << "Flushed lazy insertion log size: " << log.size() << std::endl;
-        log.clear();
 
+        auto flush_start = std::chrono::high_resolution_clock::now();
+        flush_from_log(consumed_log_elements);
+        auto flush_end = std::chrono::high_resolution_clock::now();
+        auto flush_duration = std::chrono::duration_cast<std::chrono::milliseconds>(flush_end - flush_start);
+        std::cout << "flush_from_log completed in " << flush_duration.count() << " milliseconds" << std::endl;
+
+        std::cout << "Flushed lazy insertion log size: " << log.size() << std::endl;
+
+        log.resize(0);
         // update_routing_filters();
       }
 
@@ -2061,6 +2166,294 @@ STXXL_BEGIN_NAMESPACE
         } // for (int r=0 ; r<RunsPerTier ; ++r).
       }
 
+void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> lazy_runs_beginnings,
+  int dest_tier, int run_index)
+      {
+        size_t total_elements{0};
+        HashType min = std::numeric_limits<HashType>::max();
+        HashType max = std::numeric_limits<HashType>::min();
+        for (auto source : displaced_runs)
+        {
+          if (min > source->m_min_hash)
+          {
+            min = source->m_min_hash;
+          }
+          if (max < source->m_max_hash)
+          {
+            max = source->m_max_hash;
+          }
+
+          total_elements += source->m_elements_number;
+        }
+
+        auto const & log = m_lazy_insertion_log;
+        for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
+          auto h = log[i].m_hash;
+          if (min > h)
+          {
+            min = h;
+          }
+          if (max < h)
+          {
+            max = h;
+          }
+
+          ++total_elements;
+        }
+
+        // find buckets info
+        const unsigned int intervals_no = get_buckets_no(total_elements);
+        const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
+        auto bucket_index = [&interval_size, &min, &intervals_no](HashType const& h)
+        {
+          auto index = static_cast<int>(static_cast<double>((h - min)) / interval_size);
+          // ensure max value falls in the last interval
+          if (index >= intervals_no)
+          {
+            index = intervals_no - 1;
+          }
+          return index;
+        };
+
+        run_element min_key;
+
+        std::vector<unsigned int> buckets_size(intervals_no, 0);
+        for (auto const& source : displaced_runs)
+        {
+          min_key.m_hash = std::numeric_limits<HashType>::max();
+          external_vector const& v = source->m_run;
+
+          for (int i = 0; i < v.size(); ++i)
+          {
+            auto h = v[i].m_hash;
+            if (h == 0)
+            {
+              continue;
+            }
+            ++buckets_size[bucket_index(h)];
+          }
+        }
+
+        for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
+          auto h = log[i].m_hash;
+          if (h == 0) {
+            continue;
+          }
+          ++buckets_size[bucket_index(h)];
+        }
+
+        const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
+
+        run_element empty_element;
+        empty_element.m_hash = 0;
+
+        run& final = m_tiers[dest_tier].m_runs[run_index];
+        final.active = true;
+        final.m_run_size = max_bucket_size * intervals_no;
+        final.m_bucket_size = max_bucket_size;
+        final.m_max_hash = max;
+        final.m_min_hash = min;
+        final.m_bucket_interval = interval_size;
+        final.m_buckets_no = intervals_no;
+        final.m_elements_number = 0;
+        // final.m_run = std::unique_ptr<external_vector>(new external_vector(final.m_run_size));
+        final.m_run.resize(final.m_run_size);
+        // std::fill(final.m_run.begin(), final.m_run.end(), empty_element);
+
+        unsigned int at_bucket{0};
+        unsigned int added{0};
+        size_t total_added{0};
+        size_t index{0};
+
+        struct HeapItem
+        {
+          run_element elem;
+          size_t src; // which run
+          size_t index;
+        };
+        struct ByHash
+        {
+          bool operator()(HeapItem const& a, HeapItem const& b) const
+          {
+            return a.elem.m_hash > b.elem.m_hash; // min-heap via priority_queue
+          }
+        };
+        std::priority_queue<HeapItem, std::vector<HeapItem>, ByHash> heap;
+        // std::vector<HeapItem> heap;
+        // heap.reserve(displaced_runs.size() + lazy_runs_beginnings.size());
+
+        std::vector<external_vector const*> const_sources;
+        const_sources.resize(displaced_runs.size());
+        for (int i = 0; i < displaced_runs.size(); ++i)
+        {
+          const_sources[i] = &(displaced_runs[i]->m_run);
+        }
+
+        // add heads in heap
+        for (int i = 0; i < const_sources.size(); ++i)
+        {
+          HeapItem item;
+
+          for (int j = 0; j < const_sources[i]->size(); ++j)
+          {
+            item.elem = (*const_sources[i])[j];
+            if (item.elem.m_hash == 0)
+            {
+              continue;
+            }
+            else
+            {
+              item.src = i;
+              item.index = j;
+              heap.push(item);
+              break;
+            }
+          }
+        }
+
+        for (int i = 0; i< lazy_runs_beginnings.size() ; ++i) {
+          HeapItem item;
+          auto begin = lazy_runs_beginnings[i];
+
+          for (int j = begin; j < begin + m_in_memory_table_max_size; ++j) {
+            item.elem = log[j];
+            if (item.elem.m_hash == 0)
+            {
+              continue;
+            }
+            else
+            {
+              item.src = 1000000 + i;
+              item.index = j;
+              heap.push(item);
+              break;
+            }
+          }
+        }
+
+        size_t empty_elements_added{0};
+
+        // loop rest items
+        while (!heap.empty())
+        {
+
+          if (index >= final.m_run.size())
+          {
+            std::cout << "index >= final.m_run.size()" << std::endl;
+            exit(0);
+          }
+
+          // std::pop_heap(heap.begin(), heap.end(), ByHash());
+          HeapItem min_item = heap.top();
+          int min_index_in_heap = 0;
+          heap.pop();
+          // for (int i = 1; i < heap.size(); ++i)
+          // {
+            // if (heap[i].elem.m_hash < min_item.elem.m_hash)
+            // {
+              // min_item = heap[i];
+              // min_index_in_heap = i;
+            // }
+          // }
+
+          min_key = min_item.elem;
+          while (bucket_index(min_key.m_hash) != at_bucket)
+          {
+            final.m_run[index++] = empty_element; // fill bucket
+            // index++;
+            empty_elements_added++;
+            ++added;
+            ++total_added;
+            if (added == max_bucket_size)
+            {
+              ++at_bucket;
+              added = 0;
+            }
+          }
+
+          auto prev_route = m_tiers[dest_tier].m_routing_filter->get_run_index(min_key.m_hash);
+          if (prev_route.first > run_index)
+          {
+            prev_route.first = 0;
+            prev_route.second = 0;
+            std::cerr << "ERROR: " << prev_route.first << " " << prev_route.second << std::endl;
+            exit(-1);
+          }
+          if (prev_route.first > -1)
+          {
+            m_stats.tier_to_collisions[m_tiers[dest_tier].m_level] += 1;
+          }
+          min_key.m_prev_run = prev_route.first;
+
+          auto index_in_array = total_added;
+          if (prev_route.first == run_index)
+          {
+            index_in_array = prev_route.second;
+            // points to first prefix in run. when searching if hash not in the bucket,
+            // must be in other run. point the run
+          }
+          m_tiers[dest_tier].m_routing_filter->insert(run_index, index_in_array, min_key.m_hash);
+
+          (final.m_run)[index++] = min_key;
+          ++(final.m_elements_number);
+
+          ++total_added;
+
+          ++added;
+
+          if (added == max_bucket_size)
+          {
+            ++at_bucket;
+            added = 0;
+          }
+
+
+          HeapItem item;
+          bool _added{false};
+          if (min_item.src < 1000000) {
+            for (int j = min_item.index + 1; j < const_sources[min_item.src]->size(); ++j)
+            {
+              item.elem = (*const_sources[min_item.src])[j];
+              if (item.elem.m_hash != 0)
+              {
+                item.src = min_item.src;
+                item.index = j;
+                // heap[min_index_in_heap] = item;
+                heap.push(item);
+                _added = true;
+                break;
+              }
+            }
+          }
+          else {
+            auto begin = lazy_runs_beginnings[min_item.src - 1000000];
+            for (int j = min_item.index + 1 ; j < begin + m_in_memory_table_max_size; ++j) {
+              item.elem = log[j];
+              if (item.elem.m_hash != 0)
+              {
+                item.src = min_item.src;
+                item.index = j;
+                // heap[min_index_in_heap] = item;
+                heap.push(item);
+                _added = true;
+                break;
+              }
+            }
+          }
+          if (!_added)
+          {
+            // heap.erase(heap.begin() + min_index_in_heap);
+          }
+        }
+        while (index < final.m_run.size())
+        {
+          final.m_run[index++] = empty_element;
+        }
+        if (!heap.empty()) {
+          std::cout << "ERROR: heap not empty" << std::endl;
+          throw std::runtime_error("ERROR: heap not empty");
+        }
+      }
     };
   } // namespace boa.
 
