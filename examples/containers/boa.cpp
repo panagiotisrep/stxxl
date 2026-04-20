@@ -16,7 +16,7 @@
 // #define BOA_LAMBDA 32
 // #endif
 
-#define ROUTING_FILTER_MULT 1
+// #define ROUTING_FILTER_MULT 1
 // #define BOA_OPT
 // #define BOA_SEARCH_VIA_BUCKETS
 // #define IN_MEMORY_SORT

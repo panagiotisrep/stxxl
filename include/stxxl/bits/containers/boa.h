@@ -678,7 +678,7 @@ STXXL_BEGIN_NAMESPACE
     private:
       routing_filter<HashType, Pages, PageSize, BlockSize>* create_routing_filter(uint16_t tier_level = 0)
       {
-        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + ROUTING_FILTER_MULT) / 1;
+        auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level) * ROUTING_FILTER_MULT;
         // auto hl = std::log2(run_size) / std::log2(RunsPerTier);
         // auto l_hl = p
         return new routing_filter<HashType, Pages, PageSize, BlockSize>(run_size);
