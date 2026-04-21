@@ -1142,7 +1142,7 @@ STXXL_BEGIN_NAMESPACE
             prev_route.first = 0;
             prev_route.second = 0;
             std::cerr << "ERROR: " << prev_route.first << " " << prev_route.second << std::endl;
-            exit(-1);
+            throw std::logic_error("invalid filter");
           }
           if (prev_route.first > -1)
           {
@@ -1457,7 +1457,7 @@ STXXL_BEGIN_NAMESPACE
        * @return #moved elements from log
        */
       unsigned int displace_old_runs(std::vector<displacement> const & displacements) {
-        unsigned int target_tier = displacements.back().m_to_tier;
+        unsigned int const target_tier = displacements.back().m_to_tier;
         allocate_space_for_runs(target_tier + 1);
 
         unsigned int old_elements{0};
@@ -1623,9 +1623,9 @@ STXXL_BEGIN_NAMESPACE
 
 
         auto flush_start = std::chrono::high_resolution_clock::now();
+        std::cout << "starting merge runs" << std::endl;
 
         merge_runs(displaced_runs, lazy_runs_beginnings, target_tier, target_run);
-        std::cout << "starting merge runs" << std::endl;
 
         auto flush_end = std::chrono::high_resolution_clock::now();
         auto flush_duration = std::chrono::duration_cast<std::chrono::milliseconds>(flush_end - flush_start);
@@ -1640,6 +1640,10 @@ STXXL_BEGIN_NAMESPACE
 
 #endif // SORT_BASED_MATERIALIZATION
 
+        for (int i=0 ; i<target_tier ; ++i) {
+          m_tiers[i].m_dirty_routing_filter = false;
+          m_tiers[i].m_routing_filter->reset();
+        }
         return consumed_log_elements;
       }
 
@@ -1780,7 +1784,7 @@ STXXL_BEGIN_NAMESPACE
             prev_route.first = 0;
             prev_route.second = 0;
             std::cout << "Error: Routing filter is not consistent: run_index=" << run_index << ", prev_route.first=" << prev_route.first << std::endl;
-            exit(-1);
+            throw std::logic_error("Error: Routing filter is not consistent");
           }
           elem.m_prev_run = prev_route.first;
           // elem.m_prev_index_in_run = prev_route.second;
@@ -1953,7 +1957,7 @@ STXXL_BEGIN_NAMESPACE
                           << run_index
                           << ", prev_route.first=" << prev_route.first
                           << std::endl;
-                exit(-1);
+                throw std::runtime_error("Error: Routing filter is not consistent");
               }
 
               elem.m_prev_run = prev_route.first;
@@ -2011,21 +2015,21 @@ STXXL_BEGIN_NAMESPACE
         auto final_layout = compute_layout_for_lazy_insertion_log(remaining_elements);
 
         for (auto tier_layout : final_layout) { //TODO reverse order
-          if (m_tiers[tier_layout.first].m_dirty_routing_filter) {
-            auto last_tier = final_layout.rbegin()->first;
-
-            if (tier_layout.first <= last_tier) {
-              m_tiers[tier_layout.first].m_routing_filter->reset();
-              m_tiers[tier_layout.first].m_dirty_routing_filter = false;
-            }
-            else {
-              // auto start = std::chrono::high_resolution_clock::now();
-              // update_routing_filter_translated_runs(m_tiers[tier_layout.first]);
-              // auto end = std::chrono::high_resolution_clock::now();
-              // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-              // std::cout << "update_routing_filter completed in " << duration.count() << " milliseconds" << std::endl;
-            }
-          }
+          // if (m_tiers[tier_layout.first].m_dirty_routing_filter) {
+          //   auto last_tier = final_layout.rbegin()->first;
+          //
+          //   if (tier_layout.first <= last_tier) {
+          //     m_tiers[tier_layout.first].m_routing_filter->reset();
+          //     m_tiers[tier_layout.first].m_dirty_routing_filter = false;
+          //   }
+          //   else {
+          //     // auto start = std::chrono::high_resolution_clock::now();
+          //     // update_routing_filter_translated_runs(m_tiers[tier_layout.first]);
+          //     // auto end = std::chrono::high_resolution_clock::now();
+          //     // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+          //     // std::cout << "update_routing_filter completed in " << duration.count() << " milliseconds" << std::endl;
+          //   }
+          // }
 
           // if (active_runs(m_tiers[tier_layout.first]) > 0) {
             // update_routing_filter(m_tiers[tier_layout.first]);
@@ -2354,7 +2358,7 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           if (index >= final.m_run.size())
           {
             std::cout << "index >= final.m_run.size()" << std::endl;
-            exit(0);
+            throw std::runtime_error("index >= final.m_run.size()");
           }
 
           // std::pop_heap(heap.begin(), heap.end(), ByHash());
@@ -2391,7 +2395,7 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
             prev_route.first = 0;
             prev_route.second = 0;
             std::cerr << "ERROR: " << prev_route.first << " " << prev_route.second << std::endl;
-            exit(-1);
+            throw std::runtime_error("invalid filter");
           }
           if (prev_route.first > -1)
           {
