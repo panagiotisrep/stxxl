@@ -1370,6 +1370,7 @@ STXXL_BEGIN_NAMESPACE
         std::vector<displacement> displacements;
 
         unsigned int new_space_tier = new_space.first, new_space_run = new_space.second;
+        bool changed_target_tier{false};
 
         for (auto const & tier : m_tiers) {
           if (tier.m_level < new_space_tier) {
@@ -1382,21 +1383,27 @@ STXXL_BEGIN_NAMESPACE
           else if (tier.m_level == new_space_tier) {
             auto existing_runs = active_runs(tier);
             auto total_runs = new_space_run + 1 + existing_runs;
-            if (total_runs > RunsPerTier) {
-              auto remove_runs = RunsPerTier;
-
-              for (int r=0 ; r < tier.m_runs.size() ; r++) {
+            if (total_runs >= RunsPerTier) {
+              changed_target_tier = true;
+              for (int r=0 ; r < std::max(RunsPerTier, tier.m_runs.size()) ; r++) {
                 if (tier.m_runs[r].active) {
                   displacements.push_back({tier.m_level, tier.m_level, r});
-                  --total_runs;
-                }
-                --remove_runs;
-                if (remove_runs == 0) {
-                  break;
                 }
               }
             }
           } // else if (tier.m_level == new_space_tier).
+          else if (changed_target_tier) {
+            changed_target_tier = false;
+            auto existing_runs = active_runs(tier);
+            if (existing_runs + 1 >= RunsPerTier) {
+              changed_target_tier = true;
+              for (int r=0 ; r < std::max(RunsPerTier, tier.m_runs.size()); r++) {
+                if (tier.m_runs[r].active) {
+                  displacements.push_back({tier.m_level, tier.m_level, r});
+                }
+              }
+            }
+          }
           else {
             break;
           }
@@ -2086,6 +2093,9 @@ STXXL_BEGIN_NAMESPACE
         auto & log = m_lazy_insertion_log;
 #endif
 
+        if (log.empty()) {
+          return;
+        }
 #if defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
 #ifdef IN_MEMORY_SORT
         std::cout << "Sorting lazy insertion log" << std::endl;
@@ -2115,6 +2125,7 @@ STXXL_BEGIN_NAMESPACE
         std::cout << "Flushed lazy insertion log size: " << log.size() << std::endl;
 
         log.resize(0);
+        compact_tiers();
         // update_routing_filters();
       }
 
@@ -2187,18 +2198,20 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
         }
 
         auto const & log = m_lazy_insertion_log;
-        for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
-          auto h = log[i].m_hash;
-          if (min > h)
-          {
-            min = h;
-          }
-          if (max < h)
-          {
-            max = h;
-          }
+        if (!lazy_runs_beginnings.empty()) {
+          for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
+            auto h = log[i].m_hash;
+            if (min > h)
+            {
+              min = h;
+            }
+            if (max < h)
+            {
+              max = h;
+            }
 
-          ++total_elements;
+            ++total_elements;
+          }
         }
 
         // find buckets info
@@ -2234,14 +2247,15 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           }
         }
 
-        for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
-          auto h = log[i].m_hash;
-          if (h == 0) {
-            continue;
+        if (!lazy_runs_beginnings.empty()) {
+          for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
+            auto h = log[i].m_hash;
+            if (h == 0) {
+              continue;
+            }
+            ++buckets_size[bucket_index(h)];
           }
-          ++buckets_size[bucket_index(h)];
         }
-
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
 
         run_element empty_element;
