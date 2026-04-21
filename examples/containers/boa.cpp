@@ -302,6 +302,8 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 #endif
 #endif
 
+	start_msg += " " + std::to_string(routing_filter_mult).erase(std::to_string(routing_filter_mult).find('.'), 1);
+
 	out << start_msg
 		<< "\nElements: " << data.size()
 		<< "\nBuffer: " << buffer_size
@@ -570,6 +572,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	std::string start_msg = "Interleaved Start BOA NO BUCKETS";
 #endif
 #endif
+
+	start_msg += " " + std::to_string(routing_filter_mult).erase(std::to_string(routing_filter_mult).find('.'), 1);
 
 	out << start_msg
 		<< "\nElements: " << data.size()
