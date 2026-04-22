@@ -18,6 +18,9 @@
 #include <queue>
 #include <ips2ra.hpp>
 
+#ifdef SORT_BASED_MATERIALIZATION
+  #define IN_MEMORY_SORT
+#endif
 
 STXXL_BEGIN_NAMESPACE
   namespace boa
