@@ -244,6 +244,12 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string tmp_filename = "boa_opt_static_";
+#ifdef SORT_BASED_MATERIALIZATION
+	tmp_filename += "_sort_";
+#elif defined(HYBRID_MATERIALIZATION)
+	tmp_filename += "_hybrid_";
+#endif
+
 #else
 	std::string tmp_filename = "boa_opt_";
 #endif
@@ -252,6 +258,11 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 #ifdef BOA_SEARCH_VIA_BUCKETS
 	#ifdef ONLINE_SUSPENDED_MODE
 		std::string tmp_filename = "boa_buckets_static_";
+#ifdef SORT_BASED_MATERIALIZATION
+	tmp_filename += "_sort_";
+#elif defined(HYBRID_MATERIALIZATION)
+	tmp_filename += "_hybrid_";
+#endif
 	#else
 		std::string tmp_filename = "boa_buckets_";
 	#endif
@@ -285,6 +296,11 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Start BOA OPT STATIC";
+#ifdef SORT_BASED_MATERIALIZATION
+	start_msg += " SORT ";
+#elif defined(HYBRID_MATERIALIZATION)
+	start_msg += " HYBRID ";
+#endif
 #else
 	std::string start_msg = "Start BOA OPT";
 #endif
@@ -293,6 +309,12 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 #ifdef BOA_SEARCH_VIA_BUCKETS
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Start BOA BUCKETS STATIC";
+#ifdef SORT_BASED_MATERIALIZATION
+	start_msg += " SORT ";
+#elif defined(HYBRID_MATERIALIZATION)
+	start_msg += " HYBRID ";
+#endif
+
 #else
 	std::string start_msg = "Start BOA BUCKETS";
 #endif
@@ -518,6 +540,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 #ifdef BOA_OPT
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string tmp_filename = "boa_interleaved_opt_static_";
+#ifdef SORT_BASED_MATERIALIZATION
+	tmp_filename += "_sort_";
+#elif defined(HYBRID_MATERIALIZATION)
+	tmp_filename += "_hybrid_";
+#endif
 #else
 	std::string tmp_filename = "boa_interleaved_opt_";
 #endif
@@ -527,6 +554,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string tmp_filename = "boa_interleaved_buckets_static_";
+#ifdef SORT_BASED_MATERIALIZATION
+	tmp_filename += "_sort_";
+#elif defined(HYBRID_MATERIALIZATION)
+	tmp_filename += "_hybrid_";
+#endif
 #else
 	std::string tmp_filename = "boa_interleaved_buckets_";
 #endif
@@ -558,6 +590,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 #ifdef BOA_OPT
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Interleaved Start BOA OPT STATIC";
+#ifdef SORT_BASED_MATERIALIZATION
+	start_msg += " SORT ";
+#elif defined(HYBRID_MATERIALIZATION)
+	start_msg += " HYBRID ";
+#endif
 #else
 	std::string start_msg = "Interleaved Start BOA OPT";
 #endif
@@ -565,6 +602,11 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 #ifdef BOA_SEARCH_VIA_BUCKETS
 #ifdef ONLINE_SUSPENDED_MODE
 	std::string start_msg = "Interleaved Start BOA BUCKETS STATIC";
+#ifdef SORT_BASED_MATERIALIZATION
+	start_msg += " SORT ";
+#elif defined(HYBRID_MATERIALIZATION)
+	start_msg += " HYBRID ";
+#endif
 #else
 	std::string start_msg = "Interleaved Start BOA BUCKETS";
 #endif
