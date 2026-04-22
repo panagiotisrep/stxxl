@@ -19,7 +19,7 @@
 #include <ips2ra.hpp>
 
 #ifdef SORT_BASED_MATERIALIZATION
-  #define IN_MEMORY_SORT
+  #define IN_PLACE_SORT
 #endif
 
 STXXL_BEGIN_NAMESPACE
@@ -1483,7 +1483,6 @@ STXXL_BEGIN_NAMESPACE
         }
 
 #ifdef SORT_BASED_MATERIALIZATION
-// #define IN_PLACE_SORT
 #ifdef IN_PLACE_SORT
         run& final = m_tiers[target_tier].m_runs[target_run];
         final.active = true;
@@ -1869,60 +1868,6 @@ STXXL_BEGIN_NAMESPACE
 
         std::deque<run_element> q;
 
-        // queue.push_back(run_element(final.m_run[0]));
-
-        // std::vector<std::size_t> cnt(buckets_size.size(), 0);
-        //
-        // for (unsigned int i = 0; i < target_tier_run_size; i++) {
-        //   auto& cur = final.m_run[i];
-        //   if (cur.m_hash != 0) {
-        //     std::size_t b = bucket_index(cur.m_hash);
-        //
-        //     if (b >= buckets_size.size()) {
-        //       std::cout << "bucket out of range: i=" << i
-        //                 << " hash=" << cur.m_hash
-        //                 << " bucket=" << b
-        //                 << " buckets_size.size()=" << buckets_size.size()
-        //                 << std::endl;
-        //       throw std::runtime_error("bucket out of range");
-        //     }
-        //
-        //     cnt[b]++;
-        //   }
-        // }
-
-        // bool first = true;
-        // std::size_t prev_b = 0;
-        //
-        // for (unsigned int i = 0; i < target_tier_run_size; i++) {
-        //   auto& cur = final.m_run[i];
-        //   if (cur.m_hash == 0) continue;
-        //
-        //   std::size_t b = bucket_index(cur.m_hash);
-        //
-        //   if (!first && b < prev_b) {
-        //     std::cout << "not sorted at i=" << i
-        //               << " prev_bucket=" << prev_b
-        //               << " current_bucket=" << b
-        //               << " hash=" << cur.m_hash
-        //               << std::endl;
-        //     throw std::runtime_error("input not sorted by bucket");
-        //   }
-        //
-        //   prev_b = b;
-        //   first = false;
-        // }
-        //
-        // for (std::size_t b = 0; b < cnt.size(); b++) {
-        //   if (cnt[b] > interval_size) {
-        //     std::cout << "overflow in bucket " << b
-        //               << ": count=" << cnt[b]
-        //               << " interval_size=" << interval_size
-        //               << std::endl;
-        //     throw std::runtime_error("bucket capacity overflow");
-        //   }
-        // }
-
         for (unsigned int i = 0; i < final.m_run.size(); i++) {
           const std::size_t cur_bin = i / max_bucket_size;
 
@@ -1971,34 +1916,6 @@ STXXL_BEGIN_NAMESPACE
             } else {
               final.m_run[i] = empty_element;
             }
-
-          // auto elem = queue.front();
-          //
-          // if (bucket_index(elem.m_hash) == at_bucket) {
-          //   auto prev_route = routing_filter->get_run_index(elem.m_hash);
-          //   if (prev_route.first > run_index) {
-          //     prev_route.first = 0;
-          //     prev_route.second = 0;
-          //     std::cout << "Error: Routing filter is not consistent: run_index=" << run_index << ", prev_route.first=" << prev_route.first << std::endl;
-          //     exit(-1);
-          //   }
-          //   elem.m_prev_run = prev_route.first;
-          //   routing_filter->insert(run_index, i, elem.m_hash);
-          //
-          //   queue.pop_front();
-          //   if (i+1 < target_tier_run_size) {
-          //     queue.push_back(run_element(final.m_run[i+1]));
-          //   }
-          //   final.m_run[i] = elem;
-          //   ++added;
-          // } // if (bucket_index(elem.m_hash) == at_bucket).
-          // else {
-          //   ++added;
-          //   if (i < target_tier_run_size) {
-          //     queue.push_back(run_element(final.m_run[i]));
-          //   }
-          //   final.m_run[i] = empty_element; // fill bucket
-          // }
         } // for (uint i=0 ; i <target_tier_run_size ; i++).
 
         if (!q.empty()) {
