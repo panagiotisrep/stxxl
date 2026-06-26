@@ -139,15 +139,15 @@ struct ProcIOStats
 #endif
 
 #ifndef DATA_LEAF_BLOCK_SIZE
-#define DATA_LEAF_BLOCK_SIZE (128 * 1024)
+#define DATA_LEAF_BLOCK_SIZE (32 * 1024)
 #endif
 
 #ifndef DATA_NODES_IN_CACHE
-#define DATA_NODES_IN_CACHE (256)
+#define DATA_NODES_IN_CACHE (1024)
 #endif
 
 #ifndef DATA_LEAVES_IN_CACHE
-#define DATA_LEAVES_IN_CACHE (256)
+#define DATA_LEAVES_IN_CACHE (1024)
 #endif
 
 #define IO_DETAILS
@@ -529,7 +529,7 @@ int main()
     insertions_then_queries_benchmark();
 
     int n_insertions_per_batch = 50000;
-    int k_queries_per_batch = 1000;
+    int k_queries_per_batch = 2000;
     // insertions_with_queries_benchmark(n_insertions_per_batch, k_queries_per_batch);
   }
 
