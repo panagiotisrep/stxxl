@@ -577,7 +577,7 @@ add_subdirectory(lib)
 macro(stxxl_build_tool PROGNAME)
 
   add_executable(${PROGNAME} ${PROGNAME}.cpp ${ARGN})
-  target_compile_features(${PROGNAME} PUBLIC cxx_std_20)
+#  target_compile_features(${PROGNAME} PUBLIC cxx_std_20)
   target_link_libraries(${PROGNAME} PRIVATE ${STXXL_LIBRARIES})
 
   target_include_directories(${PROGNAME} SYSTEM INTERFACE ${CMAKE_SOURCE_DIR}/extern/ips2ra/include)
