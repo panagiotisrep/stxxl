@@ -1,24 +1,24 @@
 //! [example]
 
-// #ifndef BOA_PAGES
-// #define BOA_PAGES 2
-// #endif
+#ifndef BOA_PAGES
+#define BOA_PAGES 2
+#endif
 
-// #ifndef BOA_BLOCK_SIZE
-// #define BOA_BLOCK_SIZE (32*1024)
-// #endif
+#ifndef BOA_BLOCK_SIZE
+#define BOA_BLOCK_SIZE (32*1024)
+#endif
 
-// #ifndef BOA_BUFFER_SIZE
-// #define BOA_BUFFER_SIZE 1024
-// #endif
+#ifndef BOA_BUFFER_SIZE
+#define BOA_BUFFER_SIZE 1024
+#endif
 
-// #ifndef BOA_LAMBDA
-// #define BOA_LAMBDA 32
-// #endif
+#ifndef BOA_LAMBDA
+#define BOA_LAMBDA 16
+#endif
 
-// #define ROUTING_FILTER_MULT 1
+#define ROUTING_FILTER_MULT 1
 // #define BOA_OPT
-// #define BOA_SEARCH_VIA_BUCKETS
+#define BOA_SEARCH_VIA_BUCKETS
 // #define IN_MEMORY_SORT
 // #define ONLINE_SUSPENDED_MODE
 // #define SORT_BASED_MATERIALIZATION
@@ -191,7 +191,7 @@ const int block_size = BOA_BLOCK_SIZE;
 const int lambda = BOA_LAMBDA;
 const double routing_filter_mult = ROUTING_FILTER_MULT;
 
-const int size = 300000000;
+const int size = 10000000;
 
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
@@ -799,8 +799,8 @@ int main()
 	{
 		// insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size);
 
-		int n_insertions_per_batch = 5000000;
-		int k_queries_per_batch = 1000;
+		int n_insertions_per_batch = 50000;
+		int k_queries_per_batch = 2000;
 		insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
 										  k_queries_per_batch);
 	}
