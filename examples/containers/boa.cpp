@@ -29,6 +29,7 @@
 #include <climits>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <stdexcept>
 #include <tuple>
@@ -206,8 +207,12 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
                                        const int size, const int buffer_size, const int queries_no,
                                        const int output_every_inserts, const int output_every_queries,
                                        const KeyDistribution key_dist = KeyDistribution::UniformRandom,
-                                       const QueryDistribution query_dist = QueryDistribution::Shuffled,
+                                       const std::vector<QueryDistribution>& query_dists = {QueryDistribution::Shuffled},
                                        const std::string& log_filename = "") {
+	std::string query_dists_name;
+	for (QueryDistribution qd : query_dists)
+		query_dists_name += (query_dists_name.empty() ? "" : "-") + std::string(to_string(qd));
+
 	boa_type boa(buffer_size);
 
 	/**************************** create data *****************************/
@@ -255,7 +260,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	               + "_" + std::to_string(pages)
 	               + "_" + std::to_string(block_size)
 	               + "_" + to_string(key_dist)
-	               + "_" + to_string(query_dist) + ".txt";
+	               + "_" + query_dists_name + ".txt";
 
 	const std::string filename = log_filename.empty() ? get_available_filename(tmp_filename) : log_filename;
 
@@ -310,7 +315,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 			<< "\nPage size " << page_size
 			<< "\nBlock size " << block_size
 			<< "\nKey distribution " << to_string(key_dist)
-			<< "\nQuery distribution " << to_string(query_dist)
+			<< "\nQuery distributions " << query_dists_name
 			<< "\n";
 
 	std::cout << "Start"
@@ -321,7 +326,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 			<< "\nPage size " << page_size
 			<< "\nBlock size " << block_size
 			<< "\nKey distribution " << to_string(key_dist)
-			<< "\nQuery distribution " << to_string(query_dist)
+			<< "\nQuery distributions " << query_dists_name
 			<< "\n";
 
 
@@ -393,67 +398,70 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out << (stxxl::stats_data(*Stats) - stats_insert_begin);
 
 	/******************************** Queries ***********************************/
-	std::vector<KeyType> queries;
-	generate_queries(query_dist, data, queries, queries_no);
+	// The structure is built once; each distribution queries the same structure.
+	for (QueryDistribution query_dist : query_dists) {
+		std::vector<KeyType> queries;
+		generate_queries(query_dist, data, queries, queries_no);
 
-	stxxl::stats_data stats_queries_begin(*Stats);
-	auto t_start_queries = std::chrono::high_resolution_clock::now();
+		stxxl::stats_data stats_queries_begin(*Stats);
+		auto t_start_queries = std::chrono::high_resolution_clock::now();
 
-	std::cout << "Start Queries\n";
-	out << "Start Queries\n";
+		std::cout << "Start Queries " << to_string(query_dist) << "\n";
+		out << "Start Queries " << to_string(query_dist) << "\n";
 
-	counter = 0;
-	start_iteration = std::chrono::high_resolution_clock::now();
-	for (const KeyType &d: queries) {
-		if (counter == queries_no) {
-			break;
-		}
-
-		++counter;
-		if (counter % output_every_queries == 0) {
-			auto end = std::chrono::high_resolution_clock::now();
-			std::chrono::duration<double, std::milli> elapsed = end - start_iteration;
-			std::cout << counter << " " << elapsed.count() << std::endl;
-			if (!io_details) {
-				out << "Queries " << counter << ", time " << elapsed.count() << "\n";
-			} else {
-				auto details = get_reads_writes(stats_queries_begin);
-				out << "Queries " << counter
-						<< ", time " << elapsed.count() << ", details: "
-						<< "reads " << std::get<0>(details) << ", "
-						<< "cached_reads " << std::get<1>(details) << ", "
-						<< "bytes read " << std::get<2>(details) << ", "
-						<< "writes " << std::get<3>(details) << ", "
-						<< "cached writes " << std::get<4>(details) << ", "
-						<< "bytes written " << std::get<5>(details) << "\n";
+		counter = 0;
+		start_iteration = std::chrono::high_resolution_clock::now();
+		for (const KeyType &d: queries) {
+			if (counter == queries_no) {
+				break;
 			}
-			start_iteration = std::chrono::high_resolution_clock::now();
-			// break;
+
+			++counter;
+			if (counter % output_every_queries == 0) {
+				auto end = std::chrono::high_resolution_clock::now();
+				std::chrono::duration<double, std::milli> elapsed = end - start_iteration;
+				std::cout << counter << " " << elapsed.count() << std::endl;
+				if (!io_details) {
+					out << "Queries " << counter << ", time " << elapsed.count() << "\n";
+				} else {
+					auto details = get_reads_writes(stats_queries_begin);
+					out << "Queries " << counter
+							<< ", time " << elapsed.count() << ", details: "
+							<< "reads " << std::get<0>(details) << ", "
+							<< "cached_reads " << std::get<1>(details) << ", "
+							<< "bytes read " << std::get<2>(details) << ", "
+							<< "writes " << std::get<3>(details) << ", "
+							<< "cached writes " << std::get<4>(details) << ", "
+							<< "bytes written " << std::get<5>(details) << "\n";
+				}
+				start_iteration = std::chrono::high_resolution_clock::now();
+				// break;
+			}
+
+			auto value = boa.find(d);
+			if (!value) {
+				std::cout << "did not find " << d << std::endl;
+				out << "did not find " << d << std::endl;
+				out.flush();
+				out.close();
+				return;
+			}
+			if (value->first != d) {
+				std::cout << "wrong result for key" << d << std::endl;
+				out << "wrong result for key " << d << std::endl;
+				out.flush();
+				out.close();
+				return;
+			}
 		}
 
-		auto value = boa.find(d);
-		if (!value) {
-			std::cout << "did not find " << d << std::endl;
-			out << "did not find " << d << std::endl;
-			out.flush();
-			out.close();
-			return;
-		}
-		if (value->first != d) {
-			std::cout << "wrong result for key" << d << std::endl;
-			out << "wrong result for key " << d << std::endl;
-			out.flush();
-			out.close();
-			return;
-		}
+		std::chrono::duration<double, std::milli> queries_total = std::chrono::high_resolution_clock::now() -
+		                                                          t_start_queries;
+		out << "End Queries " << to_string(query_dist) << ", time " << queries_total.count() << "\n";
+		std::cout << "End Queries " << to_string(query_dist) << ", time " << queries_total.count() << "\n";
+
+		out << (stxxl::stats_data(*Stats) - stats_queries_begin);
 	}
-
-	std::chrono::duration<double, std::milli> queries_total = std::chrono::high_resolution_clock::now() -
-	                                                          t_start_queries;
-	out << "End Queries, time " << queries_total.count() << "\n";
-	std::cout << "End Queries, time " << queries_total.count() << "\n";
-
-	out << (stxxl::stats_data(*Stats) - stats_queries_begin);
 
 	out << "Total\n"
 			<< (stxxl::stats_data(*Stats) - stats_begin)
@@ -762,7 +770,7 @@ struct BenchmarkArgs {
 	int buffer_size = BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
 	int experiments_no = 1;
 	KeyDistribution key_dist = KeyDistribution::UniformRandom;
-	QueryDistribution query_dist = QueryDistribution::Shuffled;
+	std::vector<QueryDistribution> query_dists = {QueryDistribution::Shuffled};
 	double routing_filter_mult = 1;
 	bool io_details = true;
 	std::string log_filename; // empty: generated from the parameters
@@ -779,7 +787,8 @@ void print_usage(const char* prog) {
 		<< "  --repeat N                number of times to run the experiment (default " << defaults.experiments_no << ")\n"
 		<< "  --key-dist NAME           key distribution (default " << to_string(defaults.key_dist) << "):";
 	for (KeyDistribution d : all_key_distributions) std::cout << " " << to_string(d);
-	std::cout << "\n  --query-dist NAME         query distribution (default " << to_string(defaults.query_dist) << "):";
+	std::cout << "\n  --query-dist LIST         comma-separated query distributions, run in order on the same structure,"
+		<< "\n                            or 'all' (default " << to_string(defaults.query_dists.front()) << "):";
 	for (QueryDistribution d : all_query_distributions) std::cout << " " << to_string(d);
 	std::cout << "\n  --routing-filter-mult X   routing filter multiplier (default " << defaults.routing_filter_mult << ")"
 		<< "\n  --log-file PATH           results file (default: generated from the parameters; appended to if it exists)"
@@ -836,8 +845,24 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 				std::exit(1);
 			}
 			const std::string value = argv[++i];
-			const bool ok = opt == "--key-dist" ? from_string(value, args.key_dist)
-			                                    : from_string(value, args.query_dist);
+			bool ok = true;
+			if (opt == "--key-dist") {
+				ok = from_string(value, args.key_dist);
+			}
+			else if (value == "all") {
+				args.query_dists.assign(std::begin(all_query_distributions), std::end(all_query_distributions));
+			}
+			else {
+				args.query_dists.clear();
+				std::stringstream names(value);
+				std::string name;
+				while (ok && std::getline(names, name, ',')) {
+					QueryDistribution qd;
+					ok = from_string(name, qd);
+					args.query_dists.push_back(qd);
+				}
+				ok = ok && !args.query_dists.empty();
+			}
 			if (!ok) {
 				std::cerr << "Invalid value for " << opt << ": " << value << "\n";
 				print_usage(argv[0]);
@@ -889,7 +914,7 @@ int main(int argc, char* argv[]) {
 	for (int i = 0; i < args.experiments_no; ++i) {
 		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size,
 		                                  args.queries_no, args.output_every_inserts, args.output_every_queries,
-		                                  args.key_dist, args.query_dist, args.log_filename);
+		                                  args.key_dist, args.query_dists, args.log_filename);
 
 		// int n_insertions_per_batch = 50000;
 		// int k_queries_per_batch = 2000;
