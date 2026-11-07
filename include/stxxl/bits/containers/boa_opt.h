@@ -19,8 +19,8 @@
 #include <stxxl/vector>
 #include <queue>
 #include <ips2ra.hpp>
+#include <stxxl/bits/containers/boa_params.h>
 
-// #define ROUTING_FILTER_MULT 1
 #define IN_MEMORY_SORT
 
 STXXL_BEGIN_NAMESPACE
@@ -991,7 +991,7 @@ STXXL_BEGIN_NAMESPACE
 
       size_t routing_filter_entries_for_level(uint16_t tier_level = 0)
       {
-        size_t run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + ROUTING_FILTER_MULT);
+        size_t run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + routing_filter_mult);
         return run_size;
       }
 
