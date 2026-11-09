@@ -13,7 +13,6 @@
 #endif
 
 // #define BOA_OPT
-#define BOA_SEARCH_VIA_BUCKETS
 // #define IN_MEMORY_SORT
 // #define ONLINE_SUSPENDED_MODE
 // #define SORT_BASED_MATERIALIZATION
@@ -24,6 +23,7 @@
 #include <iostream>
 #include <stxxl/bits/utils/hash.h>
 #include <stxxl/boa>
+#include <stxxl/boa_pv>
 #include <stxxl/boa_opt>
 #include <type_traits>
 #include <climits>
@@ -201,8 +201,25 @@ typedef stxxl::boa::boa<
 > boa_type;
 #endif
 
+// Selected at runtime with --boa-pv (not available with BOA_OPT)
+typedef stxxl::boa_pv::boa<
+	KeyType,
+	char,
+	uint64_t,
+	HashFunction,
+	HashCompare,
+	lambda,
+	pages,
+	page_size,
+	block_size
+> boa_pv_type;
 
+template <typename Boa>
+constexpr bool is_boa_pv() {
+	return std::is_same<Boa, boa_pv_type>::value;
+}
 
+template <typename Boa>
 void insertions_then_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size, const int queries_no,
                                        const int output_every_inserts, const int output_every_queries,
@@ -213,7 +230,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	for (QueryDistribution qd : query_dists)
 		query_dists_name += (query_dists_name.empty() ? "" : "-") + std::string(to_string(qd));
 
-	boa_type boa(buffer_size);
+	Boa boa(buffer_size);
 
 	/**************************** create data *****************************/
 	std::vector<KeyType> data;
@@ -234,23 +251,15 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 #endif
 
 #else
-#ifdef BOA_SEARCH_VIA_BUCKETS
 #ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = "boa_buckets_static_";
+	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_pv_static_" : "boa_static_";
 #ifdef SORT_BASED_MATERIALIZATION
 	tmp_filename += "_sort_";
 #elif defined(HYBRID_MATERIALIZATION)
 	tmp_filename += "_hybrid_";
 #endif
 #else
-	std::string tmp_filename = "boa_buckets_";
-#endif
-#else
-#ifdef ONLINE_SUSPENDED_MODE
-	std::cout << "STATIC MODE NOT SUPPORTED FOR BOA_SEARCH_VIA_NO_BUCKETS" << std::endl;
-	exit(-1);
-#endif
-	std::string tmp_filename = "boa_no_buckets_";
+	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_pv_" : "boa_";
 #endif
 #endif
 
@@ -287,21 +296,15 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 #endif
 
 #else
-#ifdef BOA_SEARCH_VIA_BUCKETS
 #ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = "Start BOA BUCKETS STATIC";
+	std::string start_msg = is_boa_pv<Boa>() ? "Start BOA PV STATIC" : "Start BOA STATIC";
 #ifdef SORT_BASED_MATERIALIZATION
 	start_msg += " SORT ";
 #elif defined(HYBRID_MATERIALIZATION)
 	start_msg += " HYBRID ";
 #endif
-
 #else
-	std::string start_msg = "Start BOA BUCKETS";
-#endif
-
-#else
-	std::string start_msg = "Start BOA NO BUCKETS";
+	std::string start_msg = is_boa_pv<Boa>() ? "Start BOA PV" : "Start BOA";
 #endif
 #endif
 
@@ -501,10 +504,11 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out.close();
 }
 
+template <typename Boa>
 void insertions_with_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size, const int n_insertions_per_batch,
                                        const int k_queries_per_batch) {
-	boa_type boa(buffer_size);
+	Boa boa(buffer_size);
 
 	/**************************** create data *****************************/
 	std::vector<KeyType> data;
@@ -523,21 +527,15 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 #endif
 
 #else
-#ifdef BOA_SEARCH_VIA_BUCKETS
-
 #ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = "boa_interleaved_buckets_static_";
+	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_interleaved_pv_static_" : "boa_interleaved_static_";
 #ifdef SORT_BASED_MATERIALIZATION
 	tmp_filename += "_sort_";
 #elif defined(HYBRID_MATERIALIZATION)
 	tmp_filename += "_hybrid_";
 #endif
 #else
-	std::string tmp_filename = "boa_interleaved_buckets_";
-#endif
-
-#else
-	std::string tmp_filename = "boa_interleaved_no_buckets_";
+	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_interleaved_pv_" : "boa_interleaved_";
 #endif
 #endif
 
@@ -572,19 +570,15 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	std::string start_msg = "Interleaved Start BOA OPT";
 #endif
 #else
-#ifdef BOA_SEARCH_VIA_BUCKETS
 #ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = "Interleaved Start BOA BUCKETS STATIC";
+	std::string start_msg = is_boa_pv<Boa>() ? "Interleaved Start BOA PV STATIC" : "Interleaved Start BOA STATIC";
 #ifdef SORT_BASED_MATERIALIZATION
 	start_msg += " SORT ";
 #elif defined(HYBRID_MATERIALIZATION)
 	start_msg += " HYBRID ";
 #endif
 #else
-	std::string start_msg = "Interleaved Start BOA BUCKETS";
-#endif
-#else
-	std::string start_msg = "Interleaved Start BOA NO BUCKETS";
+	std::string start_msg = is_boa_pv<Boa>() ? "Interleaved Start BOA PV" : "Interleaved Start BOA";
 #endif
 #endif
 
@@ -767,8 +761,9 @@ struct BenchmarkArgs {
 	int queries_no = 20000;
 	int output_every_inserts = 100000;
 	int output_every_queries = 1000;
-	int buffer_size = BOA_BLOCK_SIZE / boa_type::get_run_element_footprint();
+	int buffer_size = 0; // 0: BOA_BLOCK_SIZE / run element footprint of the chosen implementation
 	int experiments_no = 1;
+	bool boa_pv = false;
 	KeyDistribution key_dist = KeyDistribution::UniformRandom;
 	std::vector<QueryDistribution> query_dists = {QueryDistribution::Shuffled};
 	double routing_filter_mult = 1;
@@ -783,7 +778,9 @@ void print_usage(const char* prog) {
 		<< "  --queries N               number of queries (default " << defaults.queries_no << ")\n"
 		<< "  --output-every-inserts N  report interval for insertions (default " << defaults.output_every_inserts << ")\n"
 		<< "  --output-every-queries N  report interval for queries (default " << defaults.output_every_queries << ")\n"
-		<< "  --buffer-size N           in-memory buffer size in elements (default " << defaults.buffer_size << ")\n"
+		<< "  --buffer-size N           in-memory buffer size in elements (default "
+		<< BOA_BLOCK_SIZE / boa_type::get_run_element_footprint() << ", with --boa-pv "
+		<< BOA_BLOCK_SIZE / boa_pv_type::get_run_element_footprint() << ")\n"
 		<< "  --repeat N                number of times to run the experiment (default " << defaults.experiments_no << ")\n"
 		<< "  --key-dist NAME           key distribution (default " << to_string(defaults.key_dist) << "):";
 	for (KeyDistribution d : all_key_distributions) std::cout << " " << to_string(d);
@@ -793,6 +790,7 @@ void print_usage(const char* prog) {
 	std::cout << "\n  --routing-filter-mult X   routing filter multiplier (default " << defaults.routing_filter_mult << ")"
 		<< "\n  --log-file PATH           results file (default: generated from the parameters; appended to if it exists)"
 		<< "\n  --no-io-details           omit per-checkpoint I/O details from the results file"
+		<< "\n  --boa-pv                  use the boa_pv.h implementation (default " << (defaults.boa_pv ? "on" : "off") << ")"
 		<< "\n  --help                    show this message\n";
 }
 
@@ -807,6 +805,15 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 
 		if (opt == "--no-io-details") {
 			args.io_details = false;
+			continue;
+		}
+
+		if (opt == "--boa-pv") {
+#ifdef BOA_OPT
+			std::cerr << "--boa-pv is not available when compiled with BOA_OPT\n";
+			std::exit(1);
+#endif
+			args.boa_pv = true;
 			continue;
 		}
 
@@ -903,34 +910,45 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 	return args;
 }
 
-int main(int argc, char* argv[]) {
-	const BenchmarkArgs args = parse_args(argc, argv);
+template <typename Boa>
+void run_experiments(const BenchmarkArgs& args) {
 	const int size = args.size;
-
-	const int buffer_size = args.buffer_size;
-	io_details = args.io_details;
-	stxxl::routing_filter_mult = args.routing_filter_mult;
+	const int buffer_size = args.buffer_size > 0
+		                        ? args.buffer_size
+		                        : BOA_BLOCK_SIZE / Boa::get_run_element_footprint();
 
 	for (int i = 0; i < args.experiments_no; ++i) {
-		insertions_then_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size,
+		insertions_then_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
 		                                  args.queries_no, args.output_every_inserts, args.output_every_queries,
 		                                  args.key_dist, args.query_dists, args.log_filename);
 
 		// int n_insertions_per_batch = 50000;
 		// int k_queries_per_batch = 2000;
-		// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+		// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
 		// k_queries_per_batch);
 	}
 
 	// n_insertions_per_batch = 50000;
 	// k_queries_per_batch = 50000;
-	// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+	// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
 	// k_queries_per_batch);
 
 	// n_insertions_per_batch = 500;
 	// k_queries_per_batch = 50000;
-	// insertions_with_queries_benchmark(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
+	// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
 	// k_queries_per_batch);
+}
+
+int main(int argc, char* argv[]) {
+	const BenchmarkArgs args = parse_args(argc, argv);
+
+	io_details = args.io_details;
+	stxxl::routing_filter_mult = args.routing_filter_mult;
+
+	if (args.boa_pv)
+		run_experiments<boa_pv_type>(args);
+	else
+		run_experiments<boa_type>(args);
 
 	return 0;
 }

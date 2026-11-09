@@ -1,2 +1,0 @@
-// -*- mode: c++ -*-
-#include <stxxl/bits/containers/boa_no_buckets.h>

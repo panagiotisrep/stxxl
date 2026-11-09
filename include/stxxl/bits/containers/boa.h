@@ -35,9 +35,6 @@ STXXL_BEGIN_NAMESPACE
       struct routing_element
       {
         run_index run;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-        index_in_run index;
-#endif
       };
 
       typedef typename VECTOR_GENERATOR<routing_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
@@ -58,9 +55,6 @@ STXXL_BEGIN_NAMESPACE
       {
         routing_element element;
         element.run = 0;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-        element.index = 0;
-#endif
         std::fill(m_filter->begin(), m_filter->end(), element);
       }
 
@@ -107,11 +101,7 @@ STXXL_BEGIN_NAMESPACE
         routing_external_vector const& v = *m_filter;
         routing_element ret = v[index];
         ret.run -= 1;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-        return {ret.run, ret.index};
-#else
         return {ret.run, 0};
-#endif
       }
 
       void insert(run_index r_index, index_in_run index_in_r, HashType const& hash)
@@ -119,9 +109,6 @@ STXXL_BEGIN_NAMESPACE
         auto index = get_index_from_hash(hash);
         routing_element element;
         element.run = r_index + 1;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-        element.index = index_in_r;
-#endif
         (*m_filter)[index] = element;
       }
 
@@ -297,9 +284,6 @@ STXXL_BEGIN_NAMESPACE
       struct run_element
       {
         run_index m_prev_run = -1;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-        index_in_run m_prev_index_in_run = 0;
-#endif
         HashType m_hash;
         uint32_t m_data_vector_index{0};
 
@@ -460,7 +444,7 @@ STXXL_BEGIN_NAMESPACE
               {
                 stats.runs_per_tier[at_tier] += 1;
               }
-#ifdef BOA_SEARCH_VIA_BUCKETS
+
               ++stats.visited_runs;
               auto bucket_no = bucket_index(hash, r);
               std::size_t start = bucket_no * r.m_bucket_size;
@@ -612,34 +596,6 @@ STXXL_BEGIN_NAMESPACE
                   }
                 }
               }
-#else
-              external_vector const* v = &(tier.m_runs[run_to_search.first].m_run);
-              ++stats.visited_runs;
-              auto const& data_v = m_elements;
-              auto prev_run = run_to_search.first;
-              while (run_to_search.first != -1)
-              {
-                ++stats.visited_elements;
-
-                if (prev_run != run_to_search.first)
-                {
-                  prev_run = run_to_search.first;
-                  v = &(tier.m_runs[run_to_search.first].m_run);
-                  ++stats.visited_runs;
-                }
-
-                auto prev = (*v)[run_to_search.second];
-                if (prev.m_hash == hash)
-                {
-                  auto data = data_v[prev.m_data_vector_index];
-                  if (data.m_key == k)
-                  {
-                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
-                  }
-                }
-                run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
-              }
-#endif
             } // if (r.active).
             else
             {
@@ -746,7 +702,6 @@ STXXL_BEGIN_NAMESPACE
           }
         }
 
-#ifdef BOA_SEARCH_VIA_BUCKETS
         // find buckets info
         const unsigned int intervals_no = get_buckets_no(m_in_memory_table.size());
         const double interval_size = static_cast<double>(max - min) / static_cast<double>(intervals_no);
@@ -769,8 +724,6 @@ STXXL_BEGIN_NAMESPACE
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
 
-#endif
-
         // init run and flush elements
         int first_inactive_index = 0;
         for (auto const& run : m_tiers[0].m_runs)
@@ -787,15 +740,11 @@ STXXL_BEGIN_NAMESPACE
 
         run& r = m_tiers[0].m_runs[first_inactive_index];
         r.active = true;
-#ifdef BOA_SEARCH_VIA_BUCKETS
         r.m_run_size = max_bucket_size * intervals_no;
         r.m_bucket_size = max_bucket_size;
         r.m_bucket_interval = interval_size;
         r.m_buckets_no = intervals_no;
-#else
-        r.m_run_size = m_in_memory_table.size();
-        r.m_bucket_size = 0;
-#endif
+
         r.m_max_hash = max;
         r.m_min_hash = min;
         r.m_elements_number = 0;
@@ -817,8 +766,6 @@ STXXL_BEGIN_NAMESPACE
 
         while (it != m_in_memory_table.end())
         {
-#ifdef BOA_SEARCH_VIA_BUCKETS
-
           bool inserted_new_element{false};
           if (bucket_index(it->first) == at_bucket)
           {
@@ -834,9 +781,6 @@ STXXL_BEGIN_NAMESPACE
 
             auto prev_route = m_tiers[0].m_routing_filter->get_run_index(elem.m_hash);
             elem.m_prev_run = prev_route.first;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-            elem.m_prev_index_in_run = prev_route.second;
-#endif
             auto index_in_array = total_added;
             if (prev_route.first == first_inactive_index)
             {
@@ -866,41 +810,12 @@ STXXL_BEGIN_NAMESPACE
           {
             ++it;
           }
-#else
-          ++(r.m_elements_number);
-
-          run_element elem;
-          data_element data_elem;
-          elem.m_hash = it->first;
-          elem.m_data_vector_index = m_elements_in_external_memory++;
-          data_elem.m_key = it->second.first;
-          data_elem.m_value = it->second.second;
-
-
-          auto prev_route = m_tiers[0].m_routing_filter->get_run_index(elem.m_hash);
-          if (prev_route.first > first_inactive_index)
-          {
-            prev_route.first = 0;
-            prev_route.second = 0;
-          }
-          elem.m_prev_run = prev_route.first;
-          elem.m_prev_index_in_run = prev_route.second;
-          auto index_in_array = index;
-          m_tiers[0].m_routing_filter->insert(first_inactive_index, index_in_array, elem.m_hash);
-
-          (r.m_run)[index++] = elem;
-          m_elements[elem.m_data_vector_index] = data_elem;
-          ++r.m_size;
-          ++it;
-#endif
         } // while (it != m_in_memory_table.end()).
 
-#ifdef BOA_SEARCH_VIA_BUCKETS
         while (index < r.m_run.size())
         {
           r.m_run[index++] = empty_element;
         }
-#endif
         // m_tiers[0].m_runs.push_back(std::move(r));
         compact_tiers();
       }
@@ -993,8 +908,6 @@ STXXL_BEGIN_NAMESPACE
 
         run_element min_key;
 
-#ifdef BOA_SEARCH_VIA_BUCKETS
-
         std::vector<unsigned int> buckets_size(intervals_no, 0);
         for (auto const& source : sources)
         {
@@ -1013,7 +926,6 @@ STXXL_BEGIN_NAMESPACE
         }
 
         const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-#endif
 
         int first_inactive_index = 0;
         for (auto const& run : dest_tier.m_runs)
@@ -1029,13 +941,9 @@ STXXL_BEGIN_NAMESPACE
 
         run& final = dest_tier.m_runs[first_inactive_index];
         final.active = true;
-#ifdef BOA_SEARCH_VIA_BUCKETS
         final.m_run_size = max_bucket_size * intervals_no;
         final.m_bucket_size = max_bucket_size;
-#else
-        final.m_run_size = total_elements;
-        final.m_bucket_size = 0;
-#endif
+
         final.m_max_hash = max;
         final.m_min_hash = min;
         final.m_bucket_interval = interval_size;
@@ -1124,7 +1032,7 @@ STXXL_BEGIN_NAMESPACE
           }
 
           min_key = min_item.elem;
-#ifdef BOA_SEARCH_VIA_BUCKETS
+
           while (bucket_index(min_key.m_hash) != at_bucket)
           {
             final.m_run[index++] = empty_element; // fill bucket
@@ -1138,7 +1046,6 @@ STXXL_BEGIN_NAMESPACE
               added = 0;
             }
           }
-#endif
 
           auto prev_route = dest_tier.m_routing_filter->get_run_index(min_key.m_hash);
           if (prev_route.first > first_inactive_index)
@@ -1153,26 +1060,20 @@ STXXL_BEGIN_NAMESPACE
             m_stats.tier_to_collisions[dest_tier.m_level] += 1;
           }
           min_key.m_prev_run = prev_route.first;
-#ifndef BOA_SEARCH_VIA_BUCKETS
-          min_key.m_prev_index_in_run = prev_route.second;
-#endif
+
           auto index_in_array = total_added;
-#ifdef BOA_SEARCH_VIA_BUCKETS
           if (prev_route.first == first_inactive_index)
           {
             index_in_array = prev_route.second;
             // points to first prefix in run. when searching if hash not in the bucket,
             // must be in other run. point the run
           }
-#endif
           dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
 
           (final.m_run)[index++] = min_key;
           ++(final.m_elements_number);
 
           ++total_added;
-#ifdef BOA_SEARCH_VIA_BUCKETS
-
           ++added;
 
           if (added == max_bucket_size)
@@ -1180,7 +1081,6 @@ STXXL_BEGIN_NAMESPACE
             ++at_bucket;
             added = 0;
           }
-#endif
 
           HeapItem item;
           bool _added{false};
@@ -1201,17 +1101,10 @@ STXXL_BEGIN_NAMESPACE
             heap.erase(heap.begin() + min_index_in_heap);
           }
         }
-#ifdef BOA_SEARCH_VIA_BUCKETS
         while (index < final.m_run.size())
         {
           final.m_run[index++] = empty_element;
         }
-#else
-        if (index != final.m_run.size())
-        {
-          exit(0);
-        }
-#endif
       }
 
     public:
