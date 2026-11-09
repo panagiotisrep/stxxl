@@ -266,7 +266,8 @@ STXXL_BEGIN_NAMESPACE
         void clear() { sz = 0; }
       };
 
-      struct data_element
+      // on-disk structs below are packed to avoid alignment padding
+      struct __attribute__((packed)) data_element
       {
         KeyType m_key;
         DataType m_value;
@@ -275,17 +276,17 @@ STXXL_BEGIN_NAMESPACE
       typedef typename VECTOR_GENERATOR<data_element, PageSize, 3, BlockSize, stxxl::RC, stxxl::lru>::result
       external_data_vector;
 
-      struct lazy_run_element
+      struct __attribute__((packed)) lazy_run_element
       {
         HashType m_hash{0};
         uint32_t m_data_vector_index{0};
       };
 
-      struct run_element
+      struct __attribute__((packed)) run_element
       {
-        run_index m_prev_run = -1;
         HashType m_hash;
         uint32_t m_data_vector_index{0};
+        run_index m_prev_run = -1;
 
         run_element() = default;
         run_element(lazy_run_element const& lazy) : m_hash(lazy.m_hash), m_data_vector_index(lazy.m_data_vector_index) {
@@ -478,7 +479,7 @@ STXXL_BEGIN_NAMESPACE
                   auto data = data_v[e.m_data_vector_index];
                   if (data.m_key == k)
                   {
-                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+                    return std::unique_ptr<element_type>(new element_type(KeyType(data.m_key), DataType(data.m_value)));
                   }
                 }
                 else if (tier.m_routing_filter->equal_prefixes(h, hash))
@@ -517,7 +518,7 @@ STXXL_BEGIN_NAMESPACE
                   auto data = data_v[e.m_data_vector_index];
                   if (data.m_key == k)
                   {
-                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+                    return std::unique_ptr<element_type>(new element_type(KeyType(data.m_key), DataType(data.m_value)));
                   }
                 }
                 else if (tier.m_routing_filter->equal_prefixes(h, hash))
@@ -581,7 +582,7 @@ STXXL_BEGIN_NAMESPACE
                     auto data = data_v[prev.m_data_vector_index];
                     if (data.m_key == k)
                     {
-                      return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
+                      return std::unique_ptr<element_type>(new element_type(KeyType(data.m_key), DataType(data.m_value)));
                     }
                   }
 
@@ -1068,7 +1069,6 @@ STXXL_BEGIN_NAMESPACE
             // points to first prefix in run. when searching if hash not in the bucket,
             // must be in other run. point the run
           }
-          dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
 
           (final.m_run)[index++] = min_key;
           ++(final.m_elements_number);
@@ -1105,6 +1105,21 @@ STXXL_BEGIN_NAMESPACE
         {
           final.m_run[index++] = empty_element;
         }
+
+        external_vector const* const_final = &(final.m_run);
+        for (int j = 0; j < const_final->size(); ++j)
+        {
+          auto elem = (*const_final)[j];
+          if (elem.m_hash == 0)
+          {
+            continue;
+          }
+          else
+          {
+            dest_tier.m_routing_filter->insert(first_inactive_index, 0, elem.m_hash);
+          }
+        }
+
       }
 
     public:

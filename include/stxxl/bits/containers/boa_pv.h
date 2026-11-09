@@ -32,11 +32,36 @@ STXXL_BEGIN_NAMESPACE
     template <class HashType, int Pages, int PageSize, int BlockSize>
     struct routing_filter
     {
+      // 4-byte entry: bits 0-6 hold run + 1 (0 = empty), bit 7 is a flag (used by run elements, see
+      // first_in_run_flag), bits 8-31 a signed delta between the position in the run and its estimate
+      // (boa::estimate_position). escape_delta = position unknown. run + 1 <= 127 (RunsPerTier <= 127).
+      static constexpr int run_bits = 7;
+      static constexpr uint32_t flag_bit = 1u << run_bits;
+      static constexpr int delta_shift = 8;
+      static constexpr int delta_bits = 24;
+      static constexpr int32_t delta_min = -(1 << (delta_bits - 1));
+      static constexpr int32_t delta_max = (1 << (delta_bits - 1)) - 1;
+      static constexpr int32_t escape_delta = delta_min;
+
       struct routing_element
       {
-        run_index run;
-        index_in_run index;
+        uint32_t bits;
       };
+      static_assert(sizeof(routing_element) == 4, "routing_element must be 4 bytes");
+
+      static routing_element encode(run_index run, int32_t delta)
+      {
+        return {(uint32_t(run + 1) & ((1u << run_bits) - 1))
+                | ((uint32_t(delta) & ((1u << delta_bits) - 1)) << delta_shift)};
+      }
+
+      static std::pair<run_index, int32_t> decode(routing_element const& element)
+      {
+        uint32_t v = element.bits;
+        run_index run = run_index(int(v & ((1u << run_bits) - 1)) - 1);
+        int32_t delta = int32_t(v) >> delta_shift; // arithmetic shift sign-extends the 24-bit delta
+        return {run, delta};
+      }
 
       typedef typename VECTOR_GENERATOR<routing_element, PageSize, Pages, BlockSize, stxxl::RC, stxxl::lru>::result
       routing_external_vector;
@@ -54,9 +79,7 @@ STXXL_BEGIN_NAMESPACE
 
       void reset()
       {
-        routing_element element;
-        element.run = 0;
-        element.index = 0;
+        routing_element element{0}; // run + 1 == 0: empty
         std::fill(m_filter->begin(), m_filter->end(), element);
       }
 
@@ -97,22 +120,29 @@ STXXL_BEGIN_NAMESPACE
         return m_filter->size() * sizeof(routing_element);
       }
 
-      std::pair<run_index, index_in_run> get_run_index(HashType const& hash)
+      //! smallest hash with the same prefix as hash
+      HashType lowest_hash_with_prefix(HashType const& hash) const noexcept
+      {
+        using U = typename std::make_unsigned<HashType>::type;
+        constexpr unsigned W = sizeof(U) * 8;
+        if (prefix_bits_length_ == 0)
+          return 0;
+        unsigned shift = W - prefix_bits_length_;
+        return shift == 0 ? hash : HashType((U(hash) >> shift) << shift);
+      }
+
+      //! (run, delta) for the bucket of hash; run == -1 if empty. Positions are decoded by boa.
+      std::pair<run_index, int32_t> get(HashType const& hash)
       {
         auto index = get_index_from_hash(hash);
         routing_external_vector const& v = *m_filter;
-        routing_element ret = v[index];
-        ret.run -= 1;
-        return {ret.run, ret.index};
+        return decode(v[index]);
       }
 
-      void insert(run_index r_index, index_in_run index_in_r, HashType const& hash)
+      void insert(run_index r_index, int32_t delta, HashType const& hash)
       {
         auto index = get_index_from_hash(hash);
-        routing_element element;
-        element.run = r_index + 1;
-        element.index = index_in_r;
-        (*m_filter)[index] = element;
+        (*m_filter)[index] = encode(r_index, delta);
       }
 
       void flush_to_external_memory() const
@@ -132,6 +162,8 @@ STXXL_BEGIN_NAMESPACE
       struct stats
       {
         std::unordered_map<uint16_t, size_t> tier_to_collisions;
+        size_t pointer_escapes{0}; // directory/element positions too far from their estimate to encode
+        int64_t pointer_max_abs_delta{0}; // largest |position - estimate| stored (directory and elements)
       };
 
       stats m_stats;
@@ -170,6 +202,7 @@ STXXL_BEGIN_NAMESPACE
           ss << "Searches [" << searches
             << "], Visited runs [" << visited_runs
             << "], Visited total elements [" << visited_elements
+            << "], Directory reads [" << visited_routing_filter
             << "]\n";
           return ss.str();
         }
@@ -237,6 +270,17 @@ STXXL_BEGIN_NAMESPACE
         return size;
       }
 
+      size_t get_directory_size_bytes() const
+      {
+        size_t size = 0;
+        for (auto const& tier : m_tiers)
+        {
+          if (tier.m_routing_filter)
+            size += tier.m_routing_filter->get_size_bytes();
+        }
+        return size;
+      }
+
     private:
       //! In-memory cache
       typedef std::pair<HashType, element_type> cache_element;
@@ -269,7 +313,8 @@ STXXL_BEGIN_NAMESPACE
         void clear() { sz = 0; }
       };
 
-      struct data_element
+      // on-disk structs below are packed to avoid alignment padding
+      struct __attribute__((packed)) data_element
       {
         KeyType m_key;
         DataType m_value;
@@ -278,28 +323,27 @@ STXXL_BEGIN_NAMESPACE
       typedef typename VECTOR_GENERATOR<data_element, PageSize, 3, BlockSize, stxxl::RC, stxxl::lru>::result
       external_data_vector;
 
-      struct lazy_run_element
+      struct __attribute__((packed)) lazy_run_element
       {
         HashType m_hash{0};
         uint32_t m_data_vector_index{0};
       };
 
+      // fields ordered so the struct has no padding without packing
       struct run_element
       {
-        run_index m_prev_run = -1;
-        index_in_run m_prev_index_in_run = 0;
         HashType m_hash;
+        // newest element of the bucket in the next older run containing it, encoded like a directory
+        // entry (run + 1, position delta); shared by all elements of the bucket in this run. The flag
+        // bit marks the bucket's first (lowest) element in this run. Use set_prev / get_prev.
+        uint32_t m_prev{0};
         uint32_t m_data_vector_index{0};
 
         run_element() = default;
         run_element(lazy_run_element const& lazy) : m_hash(lazy.m_hash), m_data_vector_index(lazy.m_data_vector_index) {
-          // m_prev_index_in_run = 0;
-          m_prev_run = -1;
         }
 
         run_element(std::pair<HashType, cache_element> const& pair) : m_hash(pair.second.first), m_data_vector_index(pair.first) {
-          // m_prev_index_in_run = 0;
-          m_prev_run = -1;
         }
       };
 
@@ -428,58 +472,51 @@ STXXL_BEGIN_NAMESPACE
             continue;
           }
 
-          small_vec<int, RunsPerTier> visited_runs;
-          auto run_to_search = tier.m_routing_filter->get_run_index(hash);
+          auto pos = directory_get(tier, hash);
           ++stats.visited_routing_filter;
+          auto const& data_v = m_elements;
 
-          while (run_to_search.first != -1)
+          // pos is the newest (highest) element of the bucket in a run. The bucket's elements in that run
+          // are contiguous and sorted by hash, and all share the pointer to the next older run: scan down
+          // until hash is passed or the bucket's first element in the run is reached, then jump.
+          while (pos.first != -1)
           {
-            visited_runs.push_unique(run_to_search.first);
+            auto const& r = tier.m_runs[pos.first];
+            if (!r.active)
+              break;
+            ++stats.visited_runs;
+            stats.runs_per_tier[at_tier] += 1;
 
-            auto const& r = tier.m_runs[run_to_search.first];
-            if (r.active)
+            external_vector const& v = r.m_run;
+            std::pair<run_index, index_in_run> next{-1, 0};
+            for (int64_t i = pos.second; i >= 0; --i)
             {
-              if (stats.runs_per_tier.find(at_tier) == stats.runs_per_tier.end())
+              run_element e = v[i];
+              ++stats.visited_elements;
+              stats.elements_per_tier[at_tier] += 1;
+              if (e.m_hash == 0)
               {
-                stats.runs_per_tier[at_tier] = 1;
-                stats.elements_per_tier[at_tier] = 0;
+                ++stats.empty_elements; // bin padding
+                continue;
               }
-              else
+              if (e.m_hash == hash)
               {
-                stats.runs_per_tier[at_tier] += 1;
-              }
-              external_vector const* v = &(tier.m_runs[run_to_search.first].m_run);
-              ++stats.visited_runs;
-              auto const& data_v = m_elements;
-              auto prev_run = run_to_search.first;
-              while (run_to_search.first != -1)
-              {
-                ++stats.visited_elements;
-
-                if (prev_run != run_to_search.first)
+                auto data = data_v[e.m_data_vector_index];
+                if (data.m_key == k)
                 {
-                  prev_run = run_to_search.first;
-                  v = &(tier.m_runs[run_to_search.first].m_run);
-                  ++stats.visited_runs;
+                  return std::unique_ptr<element_type>(new element_type(KeyType(data.m_key), DataType(data.m_value)));
                 }
-
-                auto prev = (*v)[run_to_search.second];
-                if (prev.m_hash == hash)
-                {
-                  auto data = data_v[prev.m_data_vector_index];
-                  if (data.m_key == k)
-                  {
-                    return std::unique_ptr<element_type>(new element_type(data.m_key, data.m_value));
-                  }
-                }
-                run_to_search = {prev.m_prev_run, prev.m_prev_index_in_run};
               }
-            } // if (r.active).
-            else
-            {
-              run_to_search.first = -1;
+              if (e.m_hash < hash || first_in_run(e))
+              {
+                next = get_prev(e, tier);
+                break;
+              }
             }
-          } // while (run_to_search.first != -1).
+            if (next.first != -1 && next.first >= pos.first)
+              throw std::logic_error("bucket pointer does not lead to an older run");
+            pos = next;
+          }
         } // for (auto const& tier : m_tiers).
 
         // check in-memory
@@ -524,6 +561,119 @@ STXXL_BEGIN_NAMESPACE
         // std::ceil(std::log2(RunsPerTier)),
         // run_size * pow(RunsPerTier, tier_level) + tier_level
         // ); //22
+      }
+
+      typedef routing_filter<HashType, Pages, PageSize, BlockSize> routing_filter_type;
+      static_assert(RunsPerTier <= std::numeric_limits<run_index>::max(),
+                    "run indices must fit in run_index (and so in the directory entry)");
+
+      //! Expected position of hash `low` in run r, assuming uniform hashes over [min, max]. Integer-only,
+      //! so directory encoding and decoding compute exactly the same value. Needs r's min/max/size set.
+      static index_in_run estimate_position(run const& r, HashType low)
+      {
+        if (r.m_run_size == 0 || low <= r.m_min_hash)
+          return 0;
+        if (low >= r.m_max_hash)
+          return r.m_run_size - 1;
+        __extension__ typedef unsigned __int128 uint128; // avoids overflow of (low - min) * (size - 1)
+        return index_in_run(uint128(low - r.m_min_hash) * (r.m_run_size - 1) / (r.m_max_hash - r.m_min_hash));
+      }
+
+      //! Position idx of hash's bucket in run r of tier t, as a delta from its estimate
+      //! (escape_delta if it doesn't fit). Shared by directory entries and run element pointers.
+      int32_t encode_position(tier const& t, run_index r, index_in_run idx, HashType const& hash)
+      {
+        int64_t est = estimate_position(t.m_runs[r], t.m_routing_filter->lowest_hash_with_prefix(hash));
+        int64_t delta = int64_t(idx) - est;
+        m_stats.pointer_max_abs_delta = std::max(m_stats.pointer_max_abs_delta, delta < 0 ? -delta : delta);
+        if (delta <= routing_filter_type::escape_delta || delta > routing_filter_type::delta_max)
+        {
+          ++m_stats.pointer_escapes;
+          return routing_filter_type::escape_delta;
+        }
+        return int32_t(delta);
+      }
+
+      //! Inverse of encode_position; escaped deltas fall back to escape_search.
+      static index_in_run decode_position(tier const& t, run_index r, int32_t delta, HashType const& hash)
+      {
+        auto& filter = *t.m_routing_filter;
+        run const& rn = t.m_runs[r];
+        if (delta == routing_filter_type::escape_delta)
+          return escape_search(rn, filter, hash);
+        return index_in_run(estimate_position(rn, filter.lowest_hash_with_prefix(hash)) + delta);
+      }
+
+      //! Directory entry for hash's bucket: run r, position idx (stored relative to its estimate).
+      void directory_insert(tier& t, run_index r, index_in_run idx, HashType const& hash)
+      {
+        int32_t delta = encode_position(t, r, idx, hash);
+        t.m_routing_filter->insert(r, delta, hash);
+#ifdef BOA_PV_CHECK_DIRECTORY
+        if (delta != routing_filter_type::escape_delta)
+        {
+          auto back = directory_get(t, hash);
+          if (back.first != r || back.second != idx)
+            throw std::logic_error("directory entry does not decode to the stored position");
+        }
+#endif
+      }
+
+      //! (run, position) of the newest element of hash's bucket in tier t; run == -1 if none.
+      static std::pair<run_index, index_in_run> directory_get(tier const& t, HashType const& hash)
+      {
+        auto entry = t.m_routing_filter->get(hash);
+        if (entry.first == -1)
+          return {-1, 0};
+        return {entry.first, decode_position(t, entry.first, entry.second, hash)};
+      }
+
+      //! Sets the pointer of elem, about to be written to run cur of tier t. prev is the bucket's newest
+      //! element so far (from the directory; prev.first == -1 for none). If it is in cur, an earlier element
+      //! of the bucket was just written there and elem shares its pointer; otherwise elem is the bucket's
+      //! first element in cur and points to prev.
+      void set_prev(run_element& elem, tier const& t, run_index cur, std::pair<run_index, index_in_run> prev)
+      {
+        if (prev.first == cur)
+        {
+          run_element const before = t.m_runs[cur].m_run[prev.second];
+          elem.m_prev = before.m_prev & ~routing_filter_type::flag_bit;
+          return;
+        }
+        int32_t delta = prev.first == -1 ? 0 : encode_position(t, prev.first, prev.second, elem.m_hash);
+        elem.m_prev = routing_filter_type::encode(prev.first, delta).bits | routing_filter_type::flag_bit;
+#ifdef BOA_PV_CHECK_DIRECTORY
+        if (delta != routing_filter_type::escape_delta && get_prev(elem, t) != prev && prev.first != -1)
+          throw std::logic_error("element pointer does not decode to the stored position");
+#endif
+      }
+
+      //! True if elem is the first (lowest) element of its bucket in its run.
+      static bool first_in_run(run_element const& elem)
+      {
+        return elem.m_prev & routing_filter_type::flag_bit;
+      }
+
+      //! (run, position) of the newest element of elem's bucket in the next older run; run == -1 if none.
+      static std::pair<run_index, index_in_run> get_prev(run_element const& elem, tier const& t)
+      {
+        auto entry = routing_filter_type::decode({elem.m_prev});
+        if (entry.first == -1)
+          return {-1, 0};
+        return {entry.first, decode_position(t, entry.first, entry.second, elem.m_hash)};
+      }
+
+      //! Fallback for escaped entries: last (newest) element of hash's bucket in run r.
+      static index_in_run escape_search(run const& r, routing_filter_type& filter, HashType const& hash)
+      {
+        external_vector const& v = r.m_run;
+        for (size_t i = v.size(); i-- > 0;)
+        {
+          run_element e = v[i];
+          if (e.m_hash != 0 && filter.equal_prefixes(e.m_hash, hash))
+            return index_in_run(i);
+        }
+        return 0;
       }
 
       //! initialize the lsm tree
@@ -629,16 +779,15 @@ STXXL_BEGIN_NAMESPACE
           data_elem.m_value = it->second.second;
 
 
-          auto prev_route = m_tiers[0].m_routing_filter->get_run_index(elem.m_hash);
+          auto prev_route = directory_get(m_tiers[0], elem.m_hash);
           if (prev_route.first > first_inactive_index)
           {
             prev_route.first = 0;
             prev_route.second = 0;
           }
-          elem.m_prev_run = prev_route.first;
-          elem.m_prev_index_in_run = prev_route.second;
+          set_prev(elem, m_tiers[0], first_inactive_index, prev_route);
           auto index_in_array = index;
-          m_tiers[0].m_routing_filter->insert(first_inactive_index, index_in_array, elem.m_hash);
+          directory_insert(m_tiers[0], first_inactive_index, index_in_array, elem.m_hash);
 
           (r.m_run)[index++] = elem;
           m_elements[elem.m_data_vector_index] = data_elem;
@@ -844,7 +993,7 @@ STXXL_BEGIN_NAMESPACE
 
           min_key = min_item.elem;
 
-          auto prev_route = dest_tier.m_routing_filter->get_run_index(min_key.m_hash);
+          auto prev_route = directory_get(dest_tier, min_key.m_hash);
           if (prev_route.first > first_inactive_index)
           {
             prev_route.first = 0;
@@ -856,11 +1005,10 @@ STXXL_BEGIN_NAMESPACE
           {
             m_stats.tier_to_collisions[dest_tier.m_level] += 1;
           }
-          min_key.m_prev_run = prev_route.first;
-          min_key.m_prev_index_in_run = prev_route.second;
+          set_prev(min_key, dest_tier, first_inactive_index, prev_route);
           auto index_in_array = total_added;
 
-          dest_tier.m_routing_filter->insert(first_inactive_index, index_in_array, min_key.m_hash);
+          directory_insert(dest_tier, first_inactive_index, index_in_array, min_key.m_hash);
 
           (final.m_run)[index++] = min_key;
           ++(final.m_elements_number);
@@ -1461,16 +1609,15 @@ STXXL_BEGIN_NAMESPACE
             }
           }
 
-          auto prev_route = routing_filter->get_run_index(elem.m_hash);
+          auto prev_route = directory_get(m_tiers[at_tier], elem.m_hash);
           if (prev_route.first > run_index) {
             prev_route.first = 0;
             prev_route.second = 0;
             std::cout << "Error: Routing filter is not consistent: run_index=" << run_index << ", prev_route.first=" << prev_route.first << std::endl;
             throw std::logic_error("Error: Routing filter is not consistent");
           }
-          elem.m_prev_run = prev_route.first;
-          // elem.m_prev_index_in_run = prev_route.second;
-          routing_filter->insert(run_index, index, elem.m_hash);
+          set_prev(elem, m_tiers[at_tier], run_index, prev_route);
+          directory_insert(m_tiers[at_tier], run_index, index, elem.m_hash);
 
           final.m_run[index++] = elem;
 
@@ -1579,7 +1726,7 @@ STXXL_BEGIN_NAMESPACE
             if (!q.empty() && bucket_index(q.front().m_hash) == cur_bin) {
               auto elem = q.front();
 
-              auto prev_route = routing_filter->get_run_index(elem.m_hash);
+              auto prev_route = directory_get(m_tiers[at_tier], elem.m_hash);
               if (prev_route.first > run_index) {
                 std::cout << "Error: Routing filter is not consistent: run_index="
                           << run_index
@@ -1588,8 +1735,8 @@ STXXL_BEGIN_NAMESPACE
                 throw std::runtime_error("Error: Routing filter is not consistent");
               }
 
-              elem.m_prev_run = prev_route.first;
-              routing_filter->insert(run_index, i, elem.m_hash);
+              set_prev(elem, m_tiers[at_tier], run_index, prev_route);
+              directory_insert(m_tiers[at_tier], run_index, i, elem.m_hash);
 
               final.m_run[i] = elem;
               q.pop_front();
@@ -1766,14 +1913,14 @@ STXXL_BEGIN_NAMESPACE
               continue;
             }
             
-            auto prev_route = t.m_routing_filter->get_run_index(elem.m_hash);
+            auto prev_route = directory_get(t, elem.m_hash);
             if (prev_route.first > r)
             {
               prev_route.first = 0;
               prev_route.second = 0;
             }
-            elem.m_prev_run = prev_route.first;
-            t.m_routing_filter->insert(r, i, elem.m_hash);
+            set_prev(elem, t, r, prev_route);
+            directory_insert(t, r, i, elem.m_hash);
 
             v[i] = elem;
           }
@@ -1989,7 +2136,7 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
             }
           }
 
-          auto prev_route = m_tiers[dest_tier].m_routing_filter->get_run_index(min_key.m_hash);
+          auto prev_route = directory_get(m_tiers[dest_tier], min_key.m_hash);
           if (prev_route.first > run_index)
           {
             prev_route.first = 0;
@@ -2001,16 +2148,11 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           {
             m_stats.tier_to_collisions[m_tiers[dest_tier].m_level] += 1;
           }
-          min_key.m_prev_run = prev_route.first;
+          set_prev(min_key, m_tiers[dest_tier], run_index, prev_route);
 
-          auto index_in_array = total_added;
-          if (prev_route.first == run_index)
-          {
-            index_in_array = prev_route.second;
-            // points to first prefix in run. when searching if hash not in the bucket,
-            // must be in other run. point the run
-          }
-          m_tiers[dest_tier].m_routing_filter->insert(run_index, index_in_array, min_key.m_hash);
+          // the directory points to the newest element of the bucket (this one); older elements,
+          // including those earlier in this run, are reached through the element pointers
+          directory_insert(m_tiers[dest_tier], run_index, index, min_key.m_hash);
 
           (final.m_run)[index++] = min_key;
           ++(final.m_elements_number);
