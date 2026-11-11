@@ -3,9 +3,9 @@
 cmake_minimum_required(VERSION 3.13)
 project(boa_competitors CXX)
 
-set(COMPETITOR "" CACHE STRING "Competitor to build: leveldb, pachash or rocksdb")
-if(NOT COMPETITOR MATCHES "^(leveldb|pachash|rocksdb)$")
-  message(FATAL_ERROR "Set -DCOMPETITOR=leveldb|pachash|rocksdb (or use <competitor>/build.sh)")
+set(COMPETITOR "" CACHE STRING "Competitor to build: leveldb, pachash, rocksdb or silt")
+if(NOT COMPETITOR MATCHES "^(leveldb|pachash|rocksdb|silt)$")
+  message(FATAL_ERROR "Set -DCOMPETITOR=leveldb|pachash|rocksdb|silt (or use <competitor>/build.sh)")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)

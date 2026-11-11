@@ -1,0 +1,81 @@
+<!-- SILT combined store (log store → hash stores → sorted store, with background conversion and merges).
+     Based on SILT's own test/fawnds/testConfigs/testCombi.xml (values unchanged), without its "monitor"
+     wrapper. silt_bench fills in the empty values (key-len, data-len, size, temp-file, file paths) and
+     use-buffered-io-only (from the buffered-io option), and writes the final configuration into the results file. -->
+<fawnds>
+	<type>combi</type>
+	<id>0</id>
+
+	<key-len></key-len>
+	<data-len></data-len>
+	<size></size>
+	<temp-file></temp-file>
+
+	<store0>
+		<type>sf</type>
+		<id></id>
+		<key-len></key-len>
+		<data-len></data-len>
+		<file></file>
+
+		<hashtable>
+			<type>cuckoo</type>
+			<id></id>
+			<use-buffered-io-only></use-buffered-io-only>
+			<file></file>
+			<hash-table-size>131072</hash-table-size>
+		</hashtable>
+
+		<datastore>
+			<type>file</type>
+			<id></id>
+			<data-len></data-len>
+			<use-buffered-io-only></use-buffered-io-only>
+			<file></file>
+		</datastore>
+	</store0>
+
+	<store1>
+		<type>sf</type>
+		<id></id>
+		<key-len></key-len>
+		<data-len></data-len>
+		<file></file>
+
+		<hashtable>
+			<type>cuckoo</type>
+			<id></id>
+			<use-buffered-io-only></use-buffered-io-only>
+			<file></file>
+			<hash-table-size>131072</hash-table-size>
+			<use-offset>0</use-offset>
+		</hashtable>
+
+		<datastore>
+			<type>file</type>
+			<id></id>
+			<data-len></data-len>
+			<use-buffered-io-only></use-buffered-io-only>
+			<file></file>
+		</datastore>
+	</store1>
+
+	<store2>
+		<type>sf_ordered_trie</type>
+		<id></id>
+		<key-len></key-len>
+		<data-len></data-len>
+		<keys-per-block>1</keys-per-block>
+		<size></size>
+		<bucket-size>128</bucket-size>
+		<skip-bits>0</skip-bits>
+
+		<datastore>
+			<type>file</type>
+			<id></id>
+			<data-len></data-len>
+			<use-buffered-io-only></use-buffered-io-only>
+			<file></file>
+		</datastore>
+	</store2>
+</fawnds>

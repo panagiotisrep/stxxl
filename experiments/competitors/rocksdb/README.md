@@ -52,6 +52,7 @@ Everything not listed here is RocksDB v11.13.2's default.
 | `--block-size B` | `BlockBasedTableOptions::block_size` | 4096 |
 | `--cache-size B` | `BlockBasedTableOptions::block_cache = NewLRUCache(B)` | RocksDB's internal 32 MiB cache |
 | `--bloom-bits N` | `BlockBasedTableOptions::filter_policy = NewBloomFilterPolicy(N)` | no filter |
+| `--cache-index-and-filter-blocks` | `BlockBasedTableOptions::cache_index_and_filter_blocks`: index and filter blocks live in (and count against) the block cache | false (they are kept outside the cache, unbounded) |
 | `--direct-reads` | `Options::use_direct_reads` | false |
 | `--direct-writes` | `Options::use_direct_io_for_flush_and_compaction` | false |
 | `--sync` | `WriteOptions::sync` | false |

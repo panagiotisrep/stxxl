@@ -1,0 +1,22 @@
+<!-- SILT sorted store only (static: bulk-built from sorted input). Same values as store2 in
+     silt_combi.xml / SILT's testCombi.xml. silt_bench fills in the empty values and writes the final
+     configuration into the results file. -->
+<fawnds>
+	<type>sf_ordered_trie</type>
+	<id>0</id>
+
+	<key-len></key-len>
+	<data-len></data-len>
+	<keys-per-block>1</keys-per-block>
+	<size></size>
+	<bucket-size>128</bucket-size>
+	<skip-bits>0</skip-bits>
+
+	<datastore>
+		<type>file</type>
+		<id></id>
+		<data-len></data-len>
+		<use-buffered-io-only></use-buffered-io-only>
+		<file></file>
+	</datastore>
+</fawnds>

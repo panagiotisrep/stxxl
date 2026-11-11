@@ -3,18 +3,20 @@
 # <competitor>/build.sh, into build-competitors/<competitor>/ (stxxl: this repository's STXXL map and unordered_map).
 #
 # Usage: experiments/competitors/build_all.sh
-#   COMPETITORS  which ones (default: "leveldb rocksdb pachash leanstore stxxl")
+#   COMPETITORS  which ones (default: "leveldb rocksdb pachash leanstore stxxl silt")
 #   JOBS         parallel compile jobs per build (default: all cores; RocksDB needs ~1 GB RAM per job)
 #   PACHASH_BLOCK_LENGTH, PACHASH_WITH_URING   passed on to pachash/build.sh (see pachash/README.md)
 #
-# Needs git, CMake ≥ 3.25 and a C++20 compiler. LeanStore also needs the system packages
-# libtbb-dev and libaio-dev (Ubuntu/Debian: sudo apt-get install libtbb-dev libaio-dev).
+# Needs git, CMake ≥ 3.25, a C++20 compiler and the system packages listed in README.md
+# ("System packages"); on Ubuntu/Debian:
+#   sudo apt-get install build-essential cmake git libtbb-dev libaio-dev libxerces-c-dev libssl-dev \
+#                        libgsl-dev libboost-dev
 # A failing build does not stop the others; the summary at the end lists each result.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
-COMPETITORS="${COMPETITORS:-leveldb rocksdb pachash leanstore stxxl}"
+COMPETITORS="${COMPETITORS:-leveldb rocksdb pachash leanstore stxxl silt}"
 LOGS="$ROOT/build-competitors/logs"
 mkdir -p "$LOGS"
 

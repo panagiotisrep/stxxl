@@ -31,6 +31,7 @@ struct Args {
 	uint64_t block_size = rocksdb::BlockBasedTableOptions().block_size;
 	size_t cache_size = 0;      // 0: RocksDB's internal default block cache (32 MiB)
 	int bloom_bits = 0;         // 0: no filter policy (RocksDB default)
+	bool cache_index_and_filter_blocks = rocksdb::BlockBasedTableOptions().cache_index_and_filter_blocks;
 	bool direct_reads = rocksdb::Options().use_direct_reads;
 	bool direct_writes = rocksdb::Options().use_direct_io_for_flush_and_compaction;
 	bool sync = false;          // WriteOptions::sync (RocksDB default: false)
@@ -50,6 +51,8 @@ void print_usage(const char* prog) {
 		<< "\n  --block-size B            BlockBasedTableOptions::block_size in bytes (default " << d.block_size << ")"
 		<< "\n  --cache-size B            block cache in bytes (default: RocksDB's internal 32 MiB cache)"
 		<< "\n  --bloom-bits N            Bloom filter bits per key (default: no filter)"
+		<< "\n  --cache-index-and-filter-blocks  BlockBasedTableOptions::cache_index_and_filter_blocks = true:"
+		<< "\n                            index/filter blocks count against --cache-size (default false)"
 		<< "\n  --direct-reads            Options::use_direct_reads = true (default false)"
 		<< "\n  --direct-writes           Options::use_direct_io_for_flush_and_compaction = true (default false)"
 		<< "\n  --sync                    WriteOptions::sync = true (default false)"
@@ -69,6 +72,7 @@ Args parse_args(int argc, char* argv[]) {
 		else if (parse_workload_option(argc, argv, i, args.w)) continue;
 		else if (opt == "--sync") args.sync = true;
 		else if (opt == "--direct-reads") args.direct_reads = true;
+		else if (opt == "--cache-index-and-filter-blocks") args.cache_index_and_filter_blocks = true;
 		else if (opt == "--direct-writes") args.direct_writes = true;
 		else if (opt == "--compact-before-queries") args.compact_before_queries = true;
 		else if (opt == "--keep-db") args.keep_db = true;
@@ -102,6 +106,7 @@ class RocksDbStore {
 public:
 	explicit RocksDbStore(const Args& args) : args_(args) {
 		table_options_.block_size = args.block_size;
+		table_options_.cache_index_and_filter_blocks = args.cache_index_and_filter_blocks;
 		if (args.cache_size > 0) table_options_.block_cache = rocksdb::NewLRUCache(args.cache_size);
 		if (args.bloom_bits > 0) table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(args.bloom_bits));
 
@@ -175,6 +180,7 @@ public:
 		   << "\nRocksDB max_open_files " << options_.max_open_files
 		   << "\nRocksDB block_size " << table_options_.block_size
 		   << "\nRocksDB block cache " << (args_.cache_size > 0 ? std::to_string(args_.cache_size) : "default (33554432)")
+		   << "\nRocksDB cache_index_and_filter_blocks " << table_options_.cache_index_and_filter_blocks
 		   << "\nRocksDB filter " << (args_.bloom_bits > 0 ? "bloom " + std::to_string(args_.bloom_bits) + " bits/key" : "none")
 		   << "\nRocksDB compression " << (options_.compression == rocksdb::kNoCompression ? "none" : "compressed")
 		   << "\nRocksDB use_direct_reads " << options_.use_direct_reads

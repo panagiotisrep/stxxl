@@ -22,3 +22,6 @@
 	path = extern/leanstore
 	url = https://github.com/leanstore/leanstore
 	shallow = true
+[submodule "extern/silt"]
+	path = extern/silt
+	url = https://github.com/ByteHamster/silt
