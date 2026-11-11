@@ -77,7 +77,8 @@ uint64_t HashFunction(uint32_t const &k) {
 
 stxxl::stats *Stats;
 
-std::tuple<size_t, size_t, size_t, size_t, size_t, size_t, size_t, size_t> get_reads_writes(
+// reads, cached reads, bytes read, writes, cached writes, bytes written, read wait time (ms), write wait time (ms)
+std::tuple<size_t, size_t, size_t, size_t, size_t, size_t, double, double> get_reads_writes(
 	const stxxl::stats_data &src) {
 	auto delta = (stxxl::stats_data(*Stats) - src);
 	return {
@@ -87,8 +88,8 @@ std::tuple<size_t, size_t, size_t, size_t, size_t, size_t, size_t, size_t> get_r
 		delta.get_writes(),
 		delta.get_cached_writes(),
 		delta.get_written_volume(),
-		delta.get_wait_read_time(),
-		delta.get_wait_write_time()
+		delta.get_wait_read_time() * 1000,
+		delta.get_wait_write_time() * 1000
 	};
 }
 
@@ -370,6 +371,8 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 						<< "writes " << std::get<3>(details) << ", "
 						<< "cached writes " << std::get<4>(details) << ", "
 						<< "bytes written " << std::get<5>(details) << ", "
+						<< "read wait time " << std::get<6>(details) << " ms, "
+						<< "write wait time " << std::get<7>(details) << " ms, "
 						<< "boa size " << boa.get_size_bytes() << ", "
 						<< "merges " << boa.get_merges_occurred() << "\n";
 			}
@@ -435,7 +438,9 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 							<< "bytes read " << std::get<2>(details) << ", "
 							<< "writes " << std::get<3>(details) << ", "
 							<< "cached writes " << std::get<4>(details) << ", "
-							<< "bytes written " << std::get<5>(details) << "\n";
+							<< "bytes written " << std::get<5>(details) << ", "
+							<< "read wait time " << std::get<6>(details) << " ms, "
+							<< "write wait time " << std::get<7>(details) << " ms\n";
 				}
 				start_iteration = std::chrono::high_resolution_clock::now();
 				// break;
@@ -696,16 +701,16 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 					<< "writes " << std::get<3>(batch_insert_details) << ", "
 					<< "cached writes " << std::get<4>(batch_insert_details) << ", "
 					<< "bytes written " << std::get<5>(batch_insert_details) << ", "
-					<< "read wait time " << std::get<6>(batch_insert_details) << ", "
-					<< "write wait time " << std::get<7>(batch_insert_details) << "], query details: ["
+					<< "read wait time " << std::get<6>(batch_insert_details) << " ms, "
+					<< "write wait time " << std::get<7>(batch_insert_details) << " ms], query details: ["
 					<< "reads " << std::get<0>(batch_query_details) << ", "
 					<< "cached_reads " << std::get<1>(batch_query_details) << ", "
 					<< "bytes read " << std::get<2>(batch_query_details) << ", "
 					<< "writes " << std::get<3>(batch_query_details) << ", "
 					<< "cached writes " << std::get<4>(batch_query_details) << ", "
 					<< "bytes written " << std::get<5>(batch_query_details) << ", "
-					<< "read wait time " << std::get<6>(batch_query_details) << ", "
-					<< "write wait time " << std::get<7>(batch_query_details) << "], "
+					<< "read wait time " << std::get<6>(batch_query_details) << " ms, "
+					<< "write wait time " << std::get<7>(batch_query_details) << " ms], "
 					<< "boa size " << boa.get_size_bytes() << ", "
 					<< "merges " << boa.get_merges_occurred() << "\n";
 
@@ -769,6 +774,9 @@ struct BenchmarkArgs {
 	double routing_filter_mult = 1;
 	bool io_details = true;
 	std::string log_filename; // empty: generated from the parameters
+	bool interleaved = false; // run insertions_with_queries_benchmark instead of insertions_then_queries_benchmark
+	int insertions_per_batch = 50000;
+	int queries_per_batch = 2000;
 };
 
 void print_usage(const char* prog) {
@@ -791,6 +799,9 @@ void print_usage(const char* prog) {
 		<< "\n  --log-file PATH           results file (default: generated from the parameters; appended to if it exists)"
 		<< "\n  --no-io-details           omit per-checkpoint I/O details from the results file"
 		<< "\n  --boa-pv                  use the boa_pv.h implementation (default " << (defaults.boa_pv ? "on" : "off") << ")"
+		<< "\n  --interleaved             run batches of insertions followed by queries (default " << (defaults.interleaved ? "on" : "off") << ")"
+		<< "\n  --insertions-per-batch N  with --interleaved: insertions per batch (default " << defaults.insertions_per_batch << ")"
+		<< "\n  --queries-per-batch N     with --interleaved: queries per batch (default " << defaults.queries_per_batch << ")"
 		<< "\n  --help                    show this message\n";
 }
 
@@ -801,6 +812,11 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 		if (opt == "--help" || opt == "-h") {
 			print_usage(argv[0]);
 			std::exit(0);
+		}
+
+		if (opt == "--interleaved") {
+			args.interleaved = true;
+			continue;
 		}
 
 		if (opt == "--no-io-details") {
@@ -885,6 +901,8 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 		else if (opt == "--output-every-queries") target = &args.output_every_queries;
 		else if (opt == "--buffer-size") target = &args.buffer_size;
 		else if (opt == "--repeat") target = &args.experiments_no;
+		else if (opt == "--insertions-per-batch") target = &args.insertions_per_batch;
+		else if (opt == "--queries-per-batch") target = &args.queries_per_batch;
 		else {
 			std::cerr << "Unknown option: " << opt << "\n";
 			print_usage(argv[0]);
@@ -918,25 +936,15 @@ void run_experiments(const BenchmarkArgs& args) {
 		                        : BOA_BLOCK_SIZE / Boa::get_run_element_footprint();
 
 	for (int i = 0; i < args.experiments_no; ++i) {
-		insertions_then_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
-		                                  args.queries_no, args.output_every_inserts, args.output_every_queries,
-		                                  args.key_dist, args.query_dists, args.log_filename);
-
-		// int n_insertions_per_batch = 50000;
-		// int k_queries_per_batch = 2000;
-		// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-		// k_queries_per_batch);
+		if (args.interleaved) {
+			insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
+			                                       args.insertions_per_batch, args.queries_per_batch);
+		} else {
+			insertions_then_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
+			                                       args.queries_no, args.output_every_inserts, args.output_every_queries,
+			                                       args.key_dist, args.query_dists, args.log_filename);
+		}
 	}
-
-	// n_insertions_per_batch = 50000;
-	// k_queries_per_batch = 50000;
-	// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-	// k_queries_per_batch);
-
-	// n_insertions_per_batch = 500;
-	// k_queries_per_batch = 50000;
-	// insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size, n_insertions_per_batch,
-	// k_queries_per_batch);
 }
 
 int main(int argc, char* argv[]) {

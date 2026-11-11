@@ -6,7 +6,7 @@ Benchmarks two external-memory hash table implementations:
 
 | Implementation | Header | Selected by |
 |---|---|---|
-| Standard BOA (bins inside runs) | `include/stxxl/bits/containers/boa.h` | default without `--boa-pv` (see note below) |
+| Standard BOA (bins inside runs) | `include/stxxl/bits/containers/boa.h` | default (without `--boa-pv`) |
 | Pointer-augmented BOA ("pv") | `include/stxxl/bits/containers/boa_pv.h` | `--boa-pv` |
 
 `boa_opt.h` (`BOA_OPT`) is still compiled in but is not covered here.
@@ -27,11 +27,11 @@ Settings come in two kinds:
 
 | Option | Default                                | Meaning |
 |---|----------------------------------------|---|
-| `--size N` | 10000000                               | Number of elements (keys) to insert |
-| `--queries N` | 200000                                 | Number of queries per query distribution |
+| `--size N` | 1000000                                | Number of elements (keys) to insert |
+| `--queries N` | 20000                                  | Number of queries per query distribution |
 | `--output-every-inserts N` | 100000                                 | Insertion progress/report interval |
 | `--output-every-queries N` | 1000                                   | Query progress/report interval |
-| `--buffer-size N` | `BOA_BLOCK_SIZE / sizeof(run element)` | In-memory buffer (elements per tier-0 run). The default is the memory budget: one block's worth of run elements, so it depends on the element size (1365 for `boa.h`, 24-byte elements; 2048 for pv, 16-byte elements). Keep the default when comparing implementations; smaller elements legitimately get more elements in the same memory. |
+| `--buffer-size N` | `BOA_BLOCK_SIZE / sizeof(run element)` | In-memory buffer (elements per tier-0 run). The default is the memory budget: one block's worth of run elements, so it depends on the element size (2520 for `boa.h`, 13-byte elements; 2048 for pv, 16-byte elements). Keep the default when comparing implementations; smaller elements legitimately get more elements in the same memory. |
 | `--repeat N` | 1                                      | Run the experiment N times |
 | `--key-dist NAME` | `uniform`                              | Keys to insert: `uniform`, `seq_asc`, `seq_desc`, `nearly_sorted`, `clustered` |
 | `--query-dist LIST` | `shuffled`                             | Comma-separated query distributions, or `all`: `shuffled`, `uniform`, `zipf`, `zipf_sorted`, `hotspot`, `latest`, `exponential`. The structure is built once; each distribution then queries it in the given order. |
@@ -39,6 +39,9 @@ Settings come in two kinds:
 | `--log-file PATH` | generated                              | Results file. Used as given (appended to if it exists). Default name is built from the parameters plus `_exp_N`. |
 | `--no-io-details` | off                                    | Omit per-checkpoint I/O details from the results file |
 | `--boa-pv` | off                                    | Use `boa_pv.h` |
+| `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries) instead of insert-then-query |
+| `--insertions-per-batch N` | 50000                                  | With `--interleaved`: insertions per batch |
+| `--queries-per-batch N` | 2000                                   | With `--interleaved`: queries per batch (capped by the number of keys inserted so far) |
 | `--help` |                                        | Print the options and their defaults |
 
 Invalid values (non-positive numbers, unknown distribution names, unknown options) print an error and
@@ -55,17 +58,26 @@ exit with code 1.
 
 # boa.h with the same settings, for comparison
 ./boa --routing-filter-mult 0.05 --query-dist all --log-file results/boa_all.txt
+
+# interleaved: insert-heavy, balanced and query-heavy phases
+./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 2000
+./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 50000
+./boa --boa-pv --interleaved --insertions-per-batch 500   --queries-per-batch 50000 --size 100000  # 200 batches
 ```
 
 ### Benchmarks
 
 - `insertions_then_queries_benchmark` (called by `main`): insert all keys, then run each query distribution.
-- `insertions_with_queries_benchmark` (commented out in `run_experiments`): batches of
-  `n_insertions_per_batch` inserts followed by `k_queries_per_batch` queries.
+- `insertions_with_queries_benchmark` (with `--interleaved`): repeats until `--size` keys are inserted:
+  insert `--insertions-per-batch` keys, then run `--queries-per-batch` lookups of random keys inserted so
+  far. Logs one line per batch (insertion time, query time, I/O details, structure size, merges).
+  It always uses uniform keys and random queries, and ignores `--queries`, `--key-dist`, `--query-dist`,
+  `--log-file` and the `--output-every-*` options. Results go to
+  `boa_interleaved[_pv][_static…]_<λ>_<mult>_<pages>_<block size>_<insertions per batch>_<queries per batch>_exp_<N>.txt`.
 
 ### What the results file contains
 
-Per checkpoint: time and STXXL I/O (reads, writes, bytes, wait times). Per query distribution:
+Per checkpoint: time and STXXL I/O since the phase started (reads, writes, bytes, read/write wait time in ms). Per query distribution:
 
 ```
 Search stats <dist>: Searches [..], Visited runs [..], Visited total elements [..], Directory reads [..]
