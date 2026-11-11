@@ -1,3 +1,12 @@
+BOA HASH TABLES AND EXPERIMENTS
+
+  boa.md                               BOA benchmark (examples/containers/boa.cpp): options,
+                                       compile-time macros, results files
+  experiments/competitors/README.md    Competitor benchmarks on the same workloads (LevelDB,
+                                       RocksDB, PaCHash, LeanStore, STXXL map/unordered_map):
+                                       build, run, every setting used
+
+
 DESCRIPTION
 
 STXXL is an implementation of the C++ standard template library STL for

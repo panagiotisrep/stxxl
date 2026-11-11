@@ -8,3 +8,17 @@
 [submodule "extern/util"]
 	path = extern/util
 	url = git@github.com:ByteHamster/Util.git
+[submodule "extern/leveldb"]
+	path = extern/leveldb
+	url = https://github.com/google/leveldb
+[submodule "extern/pachash"]
+	path = extern/pachash
+	url = https://github.com/ByteHamster/PaCHash
+[submodule "extern/rocksdb"]
+	path = extern/rocksdb
+	url = https://github.com/meta/rocksdb
+	shallow = true
+[submodule "extern/leanstore"]
+	path = extern/leanstore
+	url = https://github.com/leanstore/leanstore
+	shallow = true
