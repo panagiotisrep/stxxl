@@ -1147,13 +1147,13 @@ STXXL_BEGIN_NAMESPACE
       external_lazy_run_item_vector m_lazy_insertion_log;
 
       void minor_flush_to_log_vector() {
-#if !defined(SORT_BASED_MATERIALIZATION) && !defined(HYBRID_MATERIALIZATION)
+        if (stxxl::materialization == stxxl::materialization_strategy::merge) {
         std::sort(m_in_memory_table.begin(), m_in_memory_table.end(),
                   [](cache_element const &a, cache_element const &b) {
                     HashCompare cmp{};
                     return cmp(a.first, b.first);
                   });
-#endif
+        }
 
         // if (m_elements.size() < get_vector_size_for_n_tiers(0))
         // {
@@ -1391,7 +1391,8 @@ STXXL_BEGIN_NAMESPACE
           throw std::runtime_error("Error: No non-active run in target tier");
         }
 
-#ifdef SORT_BASED_MATERIALIZATION
+        unsigned int consumed_log_elements{0};
+        if (stxxl::materialization == stxxl::materialization_strategy::sort) {
 #ifdef IN_PLACE_SORT
         run& final = m_tiers[target_tier].m_runs[target_run];
         final.active = true;
@@ -1456,7 +1457,7 @@ STXXL_BEGIN_NAMESPACE
         }
 
         auto const v = m_lazy_insertion_log;
-        unsigned int consumed_log_elements = target_tier_run_size - displaced_elements;
+        consumed_log_elements = target_tier_run_size - displaced_elements;
         for (int i=0 ; i < consumed_log_elements ; i++) {
           tmp[index++] = v[i];
         }
@@ -1482,7 +1483,7 @@ STXXL_BEGIN_NAMESPACE
         std::cout << "sorted_vector_to_run completed in " << flush_duration.count() << " milliseconds" << std::endl;
 
 #endif // IN_PLACE_SORT
-#else // SORT_BASED_MATERIALIZATION
+        } else {
 
         unsigned int displaced_elements{0};
         unsigned int index{0};
@@ -1527,7 +1528,7 @@ STXXL_BEGIN_NAMESPACE
         }
 
         std::vector<size_t> lazy_runs_beginnings;
-        unsigned int consumed_log_elements = target_tier_run_size - displaced_elements;
+        consumed_log_elements = target_tier_run_size - displaced_elements;
         for (int i=0 ; i < consumed_log_elements ; i+=m_in_memory_table_max_size) {
           lazy_runs_beginnings.push_back(i);
         }
@@ -1549,7 +1550,7 @@ STXXL_BEGIN_NAMESPACE
           m_tiers[move.m_from_tier].m_dirty_routing_filter = true;
         }
 
-#endif // SORT_BASED_MATERIALIZATION
+        }
 
         for (int i=0 ; i<target_tier ; ++i) {
           m_tiers[i].m_dirty_routing_filter = false;
@@ -1877,10 +1878,15 @@ STXXL_BEGIN_NAMESPACE
               throw std::runtime_error("Error: Tier run is active");
             }
 
-#if defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
+            if (stxxl::materialization != stxxl::materialization_strategy::merge) {
 #ifdef IN_MEMORY_SORT
-            auto min = log[total_moved_elements].second.first;
-            auto max = log[total_moved_elements + target_tier_run_size - 1].second.first;
+            total_moved_elements = sorted_vector_to_run<lazy_run_element, std::vector<std::pair<size_t, cache_element>>>(tier_layout.first,
+              first_inactive_run,
+              log,
+              total_moved_elements,
+              [](std::pair<size_t, cache_element> const &e) {
+                return e.second.first;
+              });
 #else
             total_moved_elements = sorted_vector_to_run<lazy_run_element, external_lazy_run_item_vector>(tier_layout.first,
               first_inactive_run,
@@ -1893,7 +1899,7 @@ STXXL_BEGIN_NAMESPACE
             // auto max = log[total_moved_elements + target_tier_run_size - 1].m_hash;
 #endif
 
-#else // defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
+            } else {
 
             std::vector<size_t> lazy_runs_beginnings;
             std::vector<run*> displaced_runs;
@@ -1908,7 +1914,7 @@ STXXL_BEGIN_NAMESPACE
             total_moved_elements += target_tier_run_size;
 
             merge_runs(displaced_runs, lazy_runs_beginnings, tier_layout.first, first_inactive_run);
-#endif // defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
+            }
 
           } // for (int at_run=0 ; at_run <= tier_layout.second ; at_run++).
         } // for (auto tier_layout : final_layout).
@@ -1929,7 +1935,7 @@ STXXL_BEGIN_NAMESPACE
         if (log.empty()) {
           return;
         }
-#if defined(SORT_BASED_MATERIALIZATION) || defined(HYBRID_MATERIALIZATION)
+        if (stxxl::materialization != stxxl::materialization_strategy::merge) {
 #ifdef IN_MEMORY_SORT
         std::cout << "Sorting lazy insertion log" << std::endl;
         std::cout << "Log size: " << log.size() << std::endl;
@@ -1944,7 +1950,7 @@ STXXL_BEGIN_NAMESPACE
 #else
         sort_vector<external_lazy_run_item_vector, lazy_run_element>(m_lazy_insertion_log.begin(), m_lazy_insertion_log.end());
 #endif
-#endif // SORT_BASED_MATERIALIZATION
+        }
 
         auto new_space = compute_space_for_lazy_insertion_log(log.size());
         auto consumed_log_elements = promote_existing_runs(new_space);

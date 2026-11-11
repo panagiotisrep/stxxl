@@ -13,9 +13,10 @@ Benchmarks two external-memory hash table implementations:
 
 Settings come in two kinds:
 
-- **Compile-time macros**: change data layout or code paths. Set them with `#define` at the top of
-  `boa.cpp` or with `-D` on the compiler command line (see [Setting macros](#setting-macros)).
-- **Command-line options**: everything else, chosen per run without recompiling.
+- **Compile-time macros**: structure parameters, `IN_MEMORY_SORT` and debug checks. Set them with `#define`
+  at the top of `boa.cpp` or with `-D` on the compiler command line (see [Setting macros](#setting-macros)).
+- **Command-line options**: everything else, including online-suspended mode and its materialization
+  strategy, chosen per run without recompiling.
 
 ---
 
@@ -42,6 +43,8 @@ Settings come in two kinds:
 | `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries) instead of insert-then-query |
 | `--insertions-per-batch N` | 50000                                  | With `--interleaved`: insertions per batch |
 | `--queries-per-batch N` | 2000                                   | With `--interleaved`: queries per batch (capped by the number of keys inserted so far) |
+| `--suspended` | off                                    | Online-suspended mode (see [Online-suspended mode](#online-suspended-mode)) |
+| `--materialization NAME` | `merge`                                | Suspended-mode materialization strategy: `merge`, `sort`, `hybrid`. Implies `--suspended`. |
 | `--help` |                                        | Print the options and their defaults |
 
 Invalid values (non-positive numbers, unknown distribution names, unknown options) print an error and
@@ -63,6 +66,11 @@ exit with code 1.
 ./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 2000
 ./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 50000
 ./boa --boa-pv --interleaved --insertions-per-batch 500   --queries-per-batch 50000 --size 100000  # 200 batches
+
+# online-suspended mode with each materialization strategy
+./boa --boa-pv --suspended                    # merge-based
+./boa --boa-pv --materialization sort
+./boa --boa-pv --materialization hybrid --interleaved   # consolidates after every batch
 ```
 
 ### Benchmarks
@@ -95,6 +103,34 @@ Default file name: `boa[_pv][_static[_sort|_hybrid]]_<λ>_<mult>_<pages>_<block 
 
 ---
 
+## Online-suspended mode
+
+Bulk-load mode, selected with `--suspended` or `--materialization NAME`. Inserts go to a staging log
+(`lazy_insert`) instead of the tier structure; `consolidate_structure()` then builds the final BOA state
+in one step. Both `boa.h` and `boa_pv.h` implement it (pv builds its runs with element pointers and
+pointer directory entries, like online insertion).
+
+| `--materialization` | How consolidation builds runs |
+|---|---|
+| `merge` (default) | Each buffer is sorted when flushed to the staging log; consolidation k-way merges those sorted chunks into the final runs. |
+| `sort` | Buffers are appended unsorted; the whole log is sorted once at consolidation (`stxxl::sort`), then copied into the final runs. Displaced old runs are re-sorted together with the log. |
+| `hybrid` | As `sort`, but displaced old runs are merged into the promoted run instead of re-sorted. |
+
+What the benchmark does in this mode:
+
+- `insertions_then_queries_benchmark`: `reserve_lazy_space_for_elements(size)`, `lazy_insert` for every
+  key, prints `before consolidation, time …`, then `consolidate_structure()`. The reported insertion
+  time includes consolidation.
+- `insertions_with_queries_benchmark`: `consolidate_structure()` after every batch of inserts.
+- Results file names get `_static_` (plus `_sort_` / `_hybrid_`), and the header says `STATIC`
+  (plus `SORT` / `HYBRID`).
+
+The strategy is the global `stxxl::materialization` (`boa_params.h`), which the benchmark sets from the
+command line. The old macros still work as defaults: `ONLINE_SUSPENDED_MODE` turns `--suspended` on,
+`SORT_BASED_MATERIALIZATION` / `HYBRID_MATERIALIZATION` set the default strategy.
+
+---
+
 ## Compile-time macros
 
 ### Structure parameters (template arguments)
@@ -107,34 +143,11 @@ Default file name: `boa[_pv][_static[_sort|_hybrid]]_<λ>_<mult>_<pages>_<block 
 
 These use `#ifndef`, so `-DBOA_LAMBDA=8` overrides them without editing the file.
 
-### Online-suspended mode
+### `IN_MEMORY_SORT` (compile-time, untested)
 
-| Macro | Meaning |
-|---|---|
-| `ONLINE_SUSPENDED_MODE` | Bulk-load mode. Inserts go to a staging log (`lazy_insert`) instead of the tier structure; `consolidate_structure()` then builds the final BOA state in one step. |
-| `SORT_BASED_MATERIALIZATION` | Consolidation strategy: global sort of the whole staging log, then copy into the final runs. |
-| `HYBRID_MATERIALIZATION` | Consolidation strategy: merge displaced old runs into the promoted run, global sort for the rest of the staged elements. |
-| `IN_MEMORY_SORT` | Keep the staging log in RAM (`m_in_memory_lazy_table`) and sort it with ips2ra, instead of an external STXXL vector sorted with `stxxl::sort`. Needs RAM for all staged elements. |
-
-How they combine:
-
-- **Neither strategy macro** = merge-based materialization: each buffer is sorted when flushed to the
-  staging log, and consolidation k-way merges those sorted chunks into the final runs.
-- **`SORT_BASED_MATERIALIZATION`**: buffers are appended unsorted; the whole log is sorted once at
-  consolidation (in memory with `IN_MEMORY_SORT`, otherwise `stxxl::sort`).
-- **`HYBRID_MATERIALIZATION`**: as sort-based for staged elements, but displaced old runs are merged.
-- Define at most one of `SORT_BASED_MATERIALIZATION` / `HYBRID_MATERIALIZATION`.
-- `IN_MEMORY_SORT` and the strategy macros only matter together with `ONLINE_SUSPENDED_MODE`.
-
-What the benchmark does in this mode:
-
-- `insertions_then_queries_benchmark`: `reserve_lazy_space_for_elements(size)`, `lazy_insert` for every
-  key, prints `before consolidation, time …`, then `consolidate_structure()`. The reported insertion
-  time includes consolidation.
-- `insertions_with_queries_benchmark`: `consolidate_structure()` after every batch of inserts.
-- Results file names get `_static_` (plus `_sort_` / `_hybrid_`), and the header says `STATIC`.
-
-Both `boa.h` and `boa_pv.h` support this mode.
+Keeps the staging log in RAM (`m_in_memory_lazy_table`) and sorts it with ips2ra instead of an external
+STXXL vector. It compiles with all strategies, but some consolidation paths still read the external log,
+so it is not expected to work; don't use it for results.
 
 ### Debug: `BOA_PV_CHECK_DIRECTORY`
 
@@ -149,14 +162,14 @@ not meaningful.
 Either uncomment/add them at the top of `boa.cpp`:
 
 ```cpp
-#define ONLINE_SUSPENDED_MODE
-#define SORT_BASED_MATERIALIZATION
+#define BOA_LAMBDA 8
+#define BOA_BLOCK_SIZE (64*1024)
 ```
 
 or pass them to the compiler, e.g. via CMake:
 
 ```bash
-cmake -DCMAKE_CXX_FLAGS="-DONLINE_SUSPENDED_MODE -DSORT_BASED_MATERIALIZATION" ..
+cmake -DCMAKE_CXX_FLAGS="-DBOA_LAMBDA=8" ..
 make boa
 ```
 

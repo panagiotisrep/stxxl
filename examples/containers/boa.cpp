@@ -14,9 +14,9 @@
 
 // #define BOA_OPT
 // #define IN_MEMORY_SORT
-// #define ONLINE_SUSPENDED_MODE
-// #define SORT_BASED_MATERIALIZATION
-// #define HYBRID_MATERIALIZATION
+// #define ONLINE_SUSPENDED_MODE        // default for --suspended
+// #define SORT_BASED_MATERIALIZATION   // default for --materialization (sort)
+// #define HYBRID_MATERIALIZATION       // default for --materialization (hybrid)
 
 
 
@@ -176,6 +176,35 @@ const int lambda = BOA_LAMBDA;
 // Per-checkpoint I/O details in the results file; set from BenchmarkArgs in main
 bool io_details = true;
 
+// Online-suspended mode (lazy_insert + consolidate_structure); set from --suspended.
+// The materialization strategy is stxxl::materialization (boa_params.h); set from --materialization.
+#ifdef ONLINE_SUSPENDED_MODE
+bool suspended_mode = true;
+#else
+bool suspended_mode = false;
+#endif
+
+// File-name and header tags for suspended mode, e.g. "static__sort_" and " STATIC SORT ".
+std::string suspended_file_tag() {
+	if (!suspended_mode)
+		return "";
+	if (stxxl::materialization == stxxl::materialization_strategy::sort)
+		return "static__sort_";
+	if (stxxl::materialization == stxxl::materialization_strategy::hybrid)
+		return "static__hybrid_";
+	return "static_";
+}
+
+std::string suspended_header_tag() {
+	if (!suspended_mode)
+		return "";
+	if (stxxl::materialization == stxxl::materialization_strategy::sort)
+		return " STATIC SORT ";
+	if (stxxl::materialization == stxxl::materialization_strategy::hybrid)
+		return " STATIC HYBRID ";
+	return " STATIC";
+}
+
 #ifdef BOA_OPT
 typedef stxxl::boa_opt::boa<
 	KeyType,
@@ -238,30 +267,9 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	generate_data(key_dist, data, size);
 
 #ifdef BOA_OPT
-
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = "boa_opt_static_";
-#ifdef SORT_BASED_MATERIALIZATION
-	tmp_filename += "_sort_";
-#elif defined(HYBRID_MATERIALIZATION)
-	tmp_filename += "_hybrid_";
-#endif
-
+	std::string tmp_filename = std::string("boa_opt_") + suspended_file_tag();
 #else
-	std::string tmp_filename = "boa_opt_";
-#endif
-
-#else
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_pv_static_" : "boa_static_";
-#ifdef SORT_BASED_MATERIALIZATION
-	tmp_filename += "_sort_";
-#elif defined(HYBRID_MATERIALIZATION)
-	tmp_filename += "_hybrid_";
-#endif
-#else
-	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_pv_" : "boa_";
-#endif
+	std::string tmp_filename = (is_boa_pv<Boa>() ? "boa_pv_" : "boa_") + suspended_file_tag();
 #endif
 
 	tmp_filename = tmp_filename
@@ -284,29 +292,9 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	auto t_start = std::chrono::system_clock::now();
 
 #ifdef BOA_OPT
-
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = "Start BOA OPT STATIC";
-#ifdef SORT_BASED_MATERIALIZATION
-	start_msg += " SORT ";
-#elif defined(HYBRID_MATERIALIZATION)
-	start_msg += " HYBRID ";
-#endif
+	std::string start_msg = std::string("Start BOA OPT") + suspended_header_tag();
 #else
-	std::string start_msg = "Start BOA OPT";
-#endif
-
-#else
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = is_boa_pv<Boa>() ? "Start BOA PV STATIC" : "Start BOA STATIC";
-#ifdef SORT_BASED_MATERIALIZATION
-	start_msg += " SORT ";
-#elif defined(HYBRID_MATERIALIZATION)
-	start_msg += " HYBRID ";
-#endif
-#else
-	std::string start_msg = is_boa_pv<Boa>() ? "Start BOA PV" : "Start BOA";
-#endif
+	std::string start_msg = (is_boa_pv<Boa>() ? "Start BOA PV" : "Start BOA") + suspended_header_tag();
 #endif
 
 	start_msg += " " + std::to_string(stxxl::routing_filter_mult).erase(std::to_string(stxxl::routing_filter_mult).find('.'), 1);
@@ -348,9 +336,8 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 
 	auto start_iteration = std::chrono::high_resolution_clock::now();
 
-#ifdef ONLINE_SUSPENDED_MODE
-	boa.reserve_lazy_space_for_elements(size);
-#endif
+	if (suspended_mode)
+		boa.reserve_lazy_space_for_elements(size);
 
 	int counter{0};
 	for (auto d: data) {
@@ -379,22 +366,18 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 			boa.reset_merges_occurred();
 			start_iteration = std::chrono::high_resolution_clock::now();
 		}
-#ifdef ONLINE_SUSPENDED_MODE
-		boa.lazy_insert(std::pair<unsigned long, char>(d, 'a'));
-#else
-		boa.insert(std::pair<unsigned long, char>(d, 'a'));
-#endif
+		if (suspended_mode)
+			boa.lazy_insert(std::pair<unsigned long, char>(d, 'a'));
+		else
+			boa.insert(std::pair<unsigned long, char>(d, 'a'));
 	}
 
-#ifdef ONLINE_SUSPENDED_MODE
-	{
+	if (suspended_mode) {
 		std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
 		                                                             t_start_insertions;
 		std::cout << "before consolidation, time " << insertions_total.count() << "\n";
+		boa.consolidate_structure();
 	}
-	// return;
-	boa.consolidate_structure();
-#endif
 
 	std::chrono::duration<double, std::milli> insertions_total = std::chrono::high_resolution_clock::now() -
 	                                                             t_start_insertions;
@@ -409,6 +392,9 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 		std::vector<KeyType> queries;
 		generate_queries(query_dist, data, queries, queries_no);
 
+#ifndef BOA_OPT
+		boa.stats.reset(); // search stats per query distribution
+#endif
 		stxxl::stats_data stats_queries_begin(*Stats);
 		auto t_start_queries = std::chrono::high_resolution_clock::now();
 
@@ -469,6 +455,10 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 		std::cout << "End Queries " << to_string(query_dist) << ", time " << queries_total.count() << "\n";
 
 		out << (stxxl::stats_data(*Stats) - stats_queries_begin);
+#ifndef BOA_OPT
+		out << "Search stats " << to_string(query_dist) << ": " << boa.stats.info();
+		std::cout << "Search stats " << to_string(query_dist) << ": " << boa.stats.info();
+#endif
 	}
 
 	out << "Total\n"
@@ -498,6 +488,15 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
 	out << "Tiers no: " << boa.get_tiers_no() << "\n";
 
+	if constexpr (is_boa_pv<Boa>()) {
+		std::cout << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";
+		std::cout << "Pointer escapes: " << boa.m_stats.pointer_escapes << "\n";
+		std::cout << "Pointer max |delta|: " << boa.m_stats.pointer_max_abs_delta << "\n";
+		out << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";
+		out << "Pointer escapes: " << boa.m_stats.pointer_escapes << "\n";
+		out << "Pointer max |delta|: " << boa.m_stats.pointer_max_abs_delta << "\n";
+	}
+
 	std::cout << "Output file [" << filename << "]\n";
 	out << "End\n";
 
@@ -520,28 +519,9 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	uniform_random_data(data, size);
 
 #ifdef BOA_OPT
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = "boa_interleaved_opt_static_";
-#ifdef SORT_BASED_MATERIALIZATION
-	tmp_filename += "_sort_";
-#elif defined(HYBRID_MATERIALIZATION)
-	tmp_filename += "_hybrid_";
-#endif
+	std::string tmp_filename = std::string("boa_interleaved_opt_") + suspended_file_tag();
 #else
-	std::string tmp_filename = "boa_interleaved_opt_";
-#endif
-
-#else
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_interleaved_pv_static_" : "boa_interleaved_static_";
-#ifdef SORT_BASED_MATERIALIZATION
-	tmp_filename += "_sort_";
-#elif defined(HYBRID_MATERIALIZATION)
-	tmp_filename += "_hybrid_";
-#endif
-#else
-	std::string tmp_filename = is_boa_pv<Boa>() ? "boa_interleaved_pv_" : "boa_interleaved_";
-#endif
+	std::string tmp_filename = (is_boa_pv<Boa>() ? "boa_interleaved_pv_" : "boa_interleaved_") + suspended_file_tag();
 #endif
 
 	tmp_filename = tmp_filename
@@ -564,27 +544,9 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	auto t_start = std::chrono::system_clock::now();
 
 #ifdef BOA_OPT
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = "Interleaved Start BOA OPT STATIC";
-#ifdef SORT_BASED_MATERIALIZATION
-	start_msg += " SORT ";
-#elif defined(HYBRID_MATERIALIZATION)
-	start_msg += " HYBRID ";
-#endif
+	std::string start_msg = std::string("Interleaved Start BOA OPT") + suspended_header_tag();
 #else
-	std::string start_msg = "Interleaved Start BOA OPT";
-#endif
-#else
-#ifdef ONLINE_SUSPENDED_MODE
-	std::string start_msg = is_boa_pv<Boa>() ? "Interleaved Start BOA PV STATIC" : "Interleaved Start BOA STATIC";
-#ifdef SORT_BASED_MATERIALIZATION
-	start_msg += " SORT ";
-#elif defined(HYBRID_MATERIALIZATION)
-	start_msg += " HYBRID ";
-#endif
-#else
-	std::string start_msg = is_boa_pv<Boa>() ? "Interleaved Start BOA PV" : "Interleaved Start BOA";
-#endif
+	std::string start_msg = (is_boa_pv<Boa>() ? "Interleaved Start BOA PV" : "Interleaved Start BOA") + suspended_header_tag();
 #endif
 
 	start_msg += " " + std::to_string(stxxl::routing_filter_mult).erase(std::to_string(stxxl::routing_filter_mult).find('.'), 1);
@@ -617,9 +579,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	int total_processed = 0;
 	int batch_no = 0;
 
-#ifdef ONLINE_SUSPENDED_MODE
-	boa.reserve_lazy_space_for_elements(size);
-#endif
+	if (suspended_mode)
+		boa.reserve_lazy_space_for_elements(size);
 
 	while (total_processed < size) {
 		++batch_no;
@@ -632,19 +593,17 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 		int n_inserted = 0;
 
 		for (int i = total_processed; i < insert_end; ++i) {
-#ifdef ONLINE_SUSPENDED_MODE
-			boa.lazy_insert(std::pair<KeyType, char>(data[i], 'a'));
-#else
-			boa.insert(std::pair<KeyType, char>(data[i], 'a'));
-#endif
+			if (suspended_mode)
+				boa.lazy_insert(std::pair<KeyType, char>(data[i], 'a'));
+			else
+				boa.insert(std::pair<KeyType, char>(data[i], 'a'));
 
 			++n_inserted;
 		}
 		total_processed = insert_end;
 
-#ifdef ONLINE_SUSPENDED_MODE
-		boa.consolidate_structure();
-#endif
+		if (suspended_mode)
+			boa.consolidate_structure();
 
 		auto batch_insert_details = get_reads_writes(stats_begin_batch);
 
@@ -749,6 +708,15 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
 	out << "Tiers no: " << boa.get_tiers_no() << "\n";
 
+	if constexpr (is_boa_pv<Boa>()) {
+		std::cout << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";
+		std::cout << "Pointer escapes: " << boa.m_stats.pointer_escapes << "\n";
+		std::cout << "Pointer max |delta|: " << boa.m_stats.pointer_max_abs_delta << "\n";
+		out << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";
+		out << "Pointer escapes: " << boa.m_stats.pointer_escapes << "\n";
+		out << "Pointer max |delta|: " << boa.m_stats.pointer_max_abs_delta << "\n";
+	}
+
 	std::cout << "Output file [" << filename << "]\n";
 	out << "End\n";
 
@@ -777,7 +745,17 @@ struct BenchmarkArgs {
 	bool interleaved = false; // run insertions_with_queries_benchmark instead of insertions_then_queries_benchmark
 	int insertions_per_batch = 50000;
 	int queries_per_batch = 2000;
+	bool suspended = suspended_mode; // online-suspended mode (default from ONLINE_SUSPENDED_MODE)
+	stxxl::materialization_strategy materialization = stxxl::materialization; // default from the strategy macros
 };
+
+std::string to_string(stxxl::materialization_strategy m) {
+	switch (m) {
+		case stxxl::materialization_strategy::sort: return "sort";
+		case stxxl::materialization_strategy::hybrid: return "hybrid";
+		default: return "merge";
+	}
+}
 
 void print_usage(const char* prog) {
 	const BenchmarkArgs defaults;
@@ -802,6 +780,10 @@ void print_usage(const char* prog) {
 		<< "\n  --interleaved             run batches of insertions followed by queries (default " << (defaults.interleaved ? "on" : "off") << ")"
 		<< "\n  --insertions-per-batch N  with --interleaved: insertions per batch (default " << defaults.insertions_per_batch << ")"
 		<< "\n  --queries-per-batch N     with --interleaved: queries per batch (default " << defaults.queries_per_batch << ")"
+		<< "\n  --suspended               online-suspended mode: lazy_insert + consolidate_structure (default "
+		<< (defaults.suspended ? "on" : "off") << ")"
+		<< "\n  --materialization NAME    suspended-mode materialization: merge, sort, hybrid (default "
+		<< to_string(defaults.materialization) << "); implies --suspended"
 		<< "\n  --help                    show this message\n";
 }
 
@@ -816,6 +798,31 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 
 		if (opt == "--interleaved") {
 			args.interleaved = true;
+			continue;
+		}
+
+		if (opt == "--suspended") {
+			args.suspended = true;
+			continue;
+		}
+
+		if (opt == "--materialization") {
+			if (i + 1 >= argc) {
+				std::cerr << "Missing value for " << opt << "\n";
+				std::exit(1);
+			}
+			const std::string value = argv[++i];
+			if (value == "merge")
+				args.materialization = stxxl::materialization_strategy::merge;
+			else if (value == "sort")
+				args.materialization = stxxl::materialization_strategy::sort;
+			else if (value == "hybrid")
+				args.materialization = stxxl::materialization_strategy::hybrid;
+			else {
+				std::cerr << "Invalid value for " << opt << ": " << value << " (expected merge, sort or hybrid)\n";
+				std::exit(1);
+			}
+			args.suspended = true;
 			continue;
 		}
 
@@ -952,6 +959,8 @@ int main(int argc, char* argv[]) {
 
 	io_details = args.io_details;
 	stxxl::routing_filter_mult = args.routing_filter_mult;
+	suspended_mode = args.suspended;
+	stxxl::materialization = args.materialization;
 
 	if (args.boa_pv)
 		run_experiments<boa_pv_type>(args);
