@@ -1,0 +1,62 @@
+# Runs and parameters for experiments/run_all.sh with FAIR=1 (equal resources, I/O model).
+# See experiments/competitors/README.md, "Fair comparison", for why each value is chosen.
+#
+# One run per line:   <run name>  <binary>  <options ...>
+#   run name   any name; it names the log files (<name>.txt, <name>.out) and can be selected with RUNS=
+#   binary     boa (= BOA_BIN), or a path relative to COMP_BUILD (the build_all.sh output)
+#   options    everything passed to the binary, except the workload (--size, --queries, --key-dist,
+#              --query-dist, identical for every run, set by SIZE/QUERIES/KEY_DIST/QUERY_DISTS) and --log-file
+# Placeholders {...} in options are computed by the script (integer arithmetic) from:
+#   M       memory budget in bytes = max BOA "Max internal memory bytes" + one block (measured from the
+#           boa runs, which therefore come first; every non-boa run uses M and runs under the memory limit)
+#   BLOCK   I/O block size (BLOCK, default 32768 = BOA_BLOCK_SIZE)
+#   SIZE    number of keys,  QUERIES  queries per distribution
+#   BATCH_INSERTS, BATCH_QUERIES  insertions / queries per batch of the interleaved runs
+#   {M_GIB} is M in GiB with 6 decimals (LeanStore takes GiB).
+#   Example: {M/2}, {BLOCK}, {M/4 > 65536 ? M/4 : 65536}
+# Text after # is a comment.
+#
+# Dynamic structures (BOA default mode, LevelDB, RocksDB, LeanStore, STXXL map/unordered_map, SILT combi)
+# run interleaved: --interleaved, batches of BATCH_INSERTS insertions each followed by BATCH_QUERIES
+# queries to keys inserted so far (QUERY_DISTS does not apply to them). Static structures (BOA
+# online-suspended, PaCHash, SILT sorted store) insert everything first, then run the queries of every
+# distribution in QUERY_DISTS.
+
+# BOA: no --buffer-size, so the buffer (BOA's memory budget) is the binary's default, which depends on
+# the block size: BOA_BLOCK_SIZE / run element size (13 bytes for boa.h, 16 for boa_pv.h), i.e. 2520
+# and 2048 for 32 KiB blocks, 5041 and 4096 for 64 KiB.
+# The block size is the unit BOA reads and writes on disk (BOA_BLOCK_SIZE, compile time; set BLOCK to
+# the same value). BOA_BLOCK_SIZE, BOA_LAMBDA, BOA_PAGES need a rebuild, see boa.md.
+boa                  boa   --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_pv               boa   --boa-pv --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_suspended        boa   --suspended --materialization merge --routing-filter-mult 1
+boa_pv_suspended     boa   --boa-pv --suspended --materialization merge --routing-filter-mult 1
+
+# LevelDB: memtable + immutable memtable = M/2, block cache = M/2. No Bloom filter: LevelDB keeps filters
+# outside its cache (unbounded), so a filter would be memory beyond M. No direct I/O in LevelDB.
+# Full compaction before the queries (driver default; timed as "Compaction").
+leveldb              leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# RocksDB: 2 memtables = M/2, block cache = M/2 including index and filter blocks (so a Bloom filter
+# lives inside M), direct I/O for reads, flushes and compactions, one background job.
+# Without --bloom-bits: no filter (with 10 bits/key the filters do not fit in M/2 at 2M keys).
+rocksdb              rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb_bloom        rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --bloom-bits 10 --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# LeanStore: buffer pool = M; plain B-tree, no transactions/WAL (BOA has neither); one worker thread.
+# Page size fixed at 4 KiB.
+leanstore            leanstore/leanstore_bench   --dram_gib={M_GIB} --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# STXXL B+-tree: node cache + leaf cache = M. Node/leaf block size is compile time (32 KiB).
+stxxl_map            stxxl/stxxl_map_bench   --node-cache {M/2} --leaf-cache {M/2} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# STXXL unordered_map: buffer = M. Buckets: STXXL's own rehash target N / (entries per sub-block * 0.875);
+# the map never rehashes by itself. Entry = 8 bytes (uint32_t key + char value, padded).
+stxxl_unordered_map  stxxl/stxxl_unordered_map_bench   --buffer-size {M} --initial-buckets {(SIZE * 64 + BLOCK * 7 - 1) / (BLOCK * 7)} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# SILT: its memory use is not configurable (SILT's own configuration, direct I/O).
+silt_combi           silt/silt_bench   --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+silt_sorted          silt/silt_bench   --mode sorted
+
+# PaCHash (static): defaults, O_DIRECT, posix I/O, queue depth 1; block length is compile time (= BLOCK).
+pachash              pachash/pachash_bench   --a 8 --io posix --queue-depth 1

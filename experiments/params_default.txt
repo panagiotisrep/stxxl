@@ -1,0 +1,17 @@
+# Runs and parameters for experiments/run_all.sh with FAIR=0: every system with its own defaults
+# ("out of the box"), no memory limit. Same format as params_fair.txt (see there); M is not
+# available here; BLOCK, SIZE, QUERIES, BATCH_INSERTS and BATCH_QUERIES are. Dynamic structures run
+# interleaved, static ones insert first and then query (as in params_fair.txt).
+
+boa                  boa   --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_pv               boa   --boa-pv --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_suspended        boa   --suspended --materialization merge --routing-filter-mult 1
+boa_pv_suspended     boa   --boa-pv --suspended --materialization merge --routing-filter-mult 1
+leveldb              leveldb/leveldb_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb              rocksdb/rocksdb_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore            leanstore/leanstore_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_map            stxxl/stxxl_map_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_unordered_map  stxxl/stxxl_unordered_map_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+silt_combi           silt/silt_bench   --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+silt_sorted          silt/silt_bench   --mode sorted
+pachash              pachash/pachash_bench

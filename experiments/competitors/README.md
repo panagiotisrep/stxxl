@@ -17,6 +17,7 @@ unchanged.
 
 ```
 experiments/competitors/
+  install_dependencies.sh  installs the system packages (Ubuntu/Debian)
   build_all.sh          downloads (submodules) and builds every competitor
   CMakeLists.txt        shared by leveldb, rocksdb, pachash, silt: selects one (-DCOMPETITOR=…)
   common.h              shared by all drivers: workload options, ProcIOStats (copied from boa.cpp),
@@ -28,6 +29,30 @@ experiments/competitors/
     run.sh              experiment grid → results/<competitor>/
     README.md           every setting used for that competitor
 ```
+
+## On a new machine, from scratch
+
+```
+git clone --recursive <repository URL> stxxl && cd stxxl     # or: git submodule update --init --recursive
+experiments/competitors/install_dependencies.sh                # system packages (Ubuntu/Debian)
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON && cmake --build build --target boa -j
+experiments/competitors/build_all.sh                           # all competitors into build-competitors/
+# edit experiments/stxxl.conf if /var/tmp has less than 60 GiB free or you want another disk
+# other block size: build boa with -DBOA_BLOCK_SIZE=<B>, the competitors with BLOCK=<B> build_all.sh,
+# and run with BLOCK=<B> (run_all.sh stops if PaCHash/STXXL were built with another block size)
+SIZE=2000000 experiments/run_all.sh                            # results/run_2000000_<date>/
+```
+
+The runs and every parameter of every system come from one editable file, one run per line
+(`<run name> <binary> <options>`, with `{M/2}`-style placeholders for the measured memory budget):
+`experiments/params_fair.txt` (FAIR=1, default) or `experiments/params_default.txt` (FAIR=0), or any file
+given with `PARAMS=`. Add a line to add a run (e.g. a second RocksDB configuration); `RUNS="boa leveldb"`
+selects lines. The file used is copied into the results folder as `params_file.txt`.
+
+`run_all.sh` writes `summary.txt`, `table.txt` (per-phase times and I/O, from `experiments/summarize.py`),
+`params.txt` and `environment.txt` next to the logs; `results/read.txt` explains how to read them.
+Check before running: `systemd-run --user --scope -p MemoryMax=100M true` must succeed (otherwise the
+memory limit, and with it `FAIR=1`, cannot be enforced), and LeanStore needs an x86-64 CPU with AVX2.
 
 ## System packages
 
@@ -42,13 +67,24 @@ build). Package names for Ubuntu/Debian (tested on Ubuntu 24.04):
 | PaCHash | none (`liburing-dev` only with `PACHASH_WITH_URING=ON`) |
 | LeanStore | `libtbb-dev`, `libaio-dev` (x86-64 CPU with AVX2) |
 | STXXL map / unordered_map | none beyond `boa`'s |
+| `experiments/run_all.sh` | `time` (`/usr/bin/time`), `python3` (`summarize.py`), `util-linux` (`taskset`, preinstalled), a systemd user session with cgroup v2 for the memory limit (`systemd-run --user --scope`; on WSL2 set `systemd=true` in `/etc/wsl.conf`) |
 | SILT | `libxerces-c-dev`, `libssl-dev`, `libgsl-dev`, `libtbb-dev`, `libboost-dev` |
 
-All at once:
+All at once, with the script (uses `sudo` when not run as root):
+
+```bash
+experiments/competitors/install_dependencies.sh               # the packages above
+experiments/competitors/install_dependencies.sh --with-uring  # also liburing-dev (PACHASH_WITH_URING=ON)
+experiments/competitors/install_dependencies.sh --dry-run     # only show what would be installed
+```
+
+or directly:
 
 ```bash
 sudo apt-get install build-essential cmake git libtbb-dev libaio-dev libxerces-c-dev libssl-dev libgsl-dev libboost-dev
 ```
+
+The script also warns if `cmake` is older than 3.25.
 
 ## Build and run
 

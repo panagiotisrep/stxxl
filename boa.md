@@ -40,7 +40,7 @@ Settings come in two kinds:
 | `--log-file PATH` | generated                              | Results file. Used as given (appended to if it exists). Default name is built from the parameters plus `_exp_N`. |
 | `--no-io-details` | off                                    | Omit per-checkpoint I/O details from the results file |
 | `--boa-pv` | off                                    | Use `boa_pv.h` |
-| `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries) instead of insert-then-query |
+| `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries to uniformly chosen keys inserted so far) instead of insert-then-query. Uses `--key-dist` and `--log-file`; `--query-dist` does not apply. |
 | `--insertions-per-batch N` | 50000                                  | With `--interleaved`: insertions per batch |
 | `--queries-per-batch N` | 2000                                   | With `--interleaved`: queries per batch (capped by the number of keys inserted so far) |
 | `--suspended` | off                                    | Online-suspended mode (see [Online-suspended mode](#online-suspended-mode)) |

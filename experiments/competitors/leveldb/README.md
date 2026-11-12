@@ -48,7 +48,7 @@ Everything not listed here is LevelDB 1.23's default.
 | `--cache-size B` | `Options::block_cache = NewLRUCache(B)` | LevelDB's internal 8 MiB cache |
 | `--bloom-bits N` | `Options::filter_policy = NewBloomFilterPolicy(N)` | no filter |
 | `--sync` | `WriteOptions::sync` | false |
-| `--compact-before-queries` | `DB::CompactRange(nullptr, nullptr)` after the insertions, timed and logged separately as `Compaction` | off |
+| `--no-compact-before-queries` | skip the `DB::CompactRange(nullptr, nullptr)` that runs after the insertions; by default it runs, timed and logged separately as `Compaction`, followed by `Insertions + compaction, time` (use that for insertion throughput) | compact |
 | `--db-dir PATH` | database directory, `DestroyDB` before each experiment and after it (unless `--keep-db`) | `leveldb_bench_db` |
 
 Fixed by the driver:
@@ -69,8 +69,8 @@ Name: `leveldb_<write buffer>_<block size>_<cache>_<bloom bits>_<key dist>_<quer
 (interleaved: `leveldb_interleaved_<write buffer>_<block size>_<cache>_<bloom bits>_<ins>_<queries>_exp_<N>.txt`),
 in the current directory, or `--log-file`.
 
-LevelDB-specific lines: `disk bytes` at each insertion checkpoint and batch, `Compaction` (with
-`--compact-before-queries`), and at the end `LevelDB approximate memory usage`, `LevelDB disk bytes`,
+LevelDB-specific lines: `disk bytes` at each insertion checkpoint and batch, `Compaction` and `Insertions + compaction` (unless
+`--no-compact-before-queries`), and at the end `LevelDB approximate memory usage`, `LevelDB disk bytes`,
 files per level and `leveldb.stats`.
 
 ## Notes
@@ -78,4 +78,5 @@ files per level and `leveldb.stats`.
 - LevelDB has no direct I/O: it always reads and writes through the OS page cache (see the shared
   measurement notes).
 - LevelDB compacts in background threads, so compaction started by the insertions can continue into the
-  query phase. `--compact-before-queries` finishes it first and logs its cost separately.
+  query phase. By default the driver finishes it with a full compaction before the queries and logs its cost
+  separately (`--no-compact-before-queries` skips this).

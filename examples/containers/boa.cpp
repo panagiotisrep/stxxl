@@ -508,15 +508,29 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out.close();
 }
 
+// FNV-1a over the key bytes, the same as experiments/competitors/common.h checksum(): equal values prove
+// that BOA and the competitors inserted the same keys in the same order.
+inline uint64_t keys_checksum(const std::vector<KeyType>& v) {
+	uint64_t h = 14695981039346656037ull;
+	for (KeyType k : v)
+		for (std::size_t i = 0; i < sizeof(KeyType); ++i) {
+			h ^= (k >> (8 * i)) & 0xff;
+			h *= 1099511628211ull;
+		}
+	return h;
+}
+
 template <typename Boa>
 void insertions_with_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size, const int n_insertions_per_batch,
-                                       const int k_queries_per_batch) {
+                                       const int k_queries_per_batch,
+                                       const KeyDistribution key_dist = KeyDistribution::UniformRandom,
+                                       const std::string& log_filename = "") {
 	Boa boa(buffer_size);
 
 	/**************************** create data *****************************/
 	std::vector<KeyType> data;
-	uniform_random_data(data, size);
+	generate_data(key_dist, data, size);
 
 #ifdef BOA_OPT
 	std::string tmp_filename = std::string("boa_interleaved_opt_") + suspended_file_tag();
@@ -532,7 +546,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	               + "_" + std::to_string(n_insertions_per_batch)
 	               + "_" + std::to_string(k_queries_per_batch) + ".txt";
 
-	const std::string filename = get_available_filename(tmp_filename);
+	const std::string filename = log_filename.empty() ? get_available_filename(tmp_filename) : log_filename;
 
 	std::ofstream out(filename, std::ios::app);
 	if (!out)
@@ -560,6 +574,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			<< "\nBlock size " << block_size
 			<< "\nInsertions per batch: " << n_insertions_per_batch
 			<< "\nQueries per batch: " << k_queries_per_batch
+			<< "\nKey distribution " << to_string(key_dist)
+			<< "\nKeys checksum " << keys_checksum(data)
 			<< "\n";
 
 	std::cout << start_msg
@@ -945,7 +961,8 @@ void run_experiments(const BenchmarkArgs& args) {
 	for (int i = 0; i < args.experiments_no; ++i) {
 		if (args.interleaved) {
 			insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
-			                                       args.insertions_per_batch, args.queries_per_batch);
+			                                       args.insertions_per_batch, args.queries_per_batch,
+			                                       args.key_dist, args.log_filename);
 		} else {
 			insertions_then_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
 			                                       args.queries_no, args.output_every_inserts, args.output_every_queries,

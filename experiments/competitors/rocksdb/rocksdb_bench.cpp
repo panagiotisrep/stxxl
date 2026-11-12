@@ -35,7 +35,7 @@ struct Args {
 	bool direct_reads = rocksdb::Options().use_direct_reads;
 	bool direct_writes = rocksdb::Options().use_direct_io_for_flush_and_compaction;
 	bool sync = false;          // WriteOptions::sync (RocksDB default: false)
-	bool compact_before_queries = false;
+	bool compact_before_queries = true;
 	bool keep_db = false;
 };
 
@@ -56,7 +56,8 @@ void print_usage(const char* prog) {
 		<< "\n  --direct-reads            Options::use_direct_reads = true (default false)"
 		<< "\n  --direct-writes           Options::use_direct_io_for_flush_and_compaction = true (default false)"
 		<< "\n  --sync                    WriteOptions::sync = true (default false)"
-		<< "\n  --compact-before-queries  CompactRange over the whole key range after the insertions (timed separately)"
+		<< "\n  --no-compact-before-queries  skip the CompactRange over the whole key range that runs after the"
+		<< "\n                              insertions (default: compact; timed separately as Compaction)"
 		<< "\n  --keep-db                 do not destroy the database after the experiment"
 		<< "\n  --help                    show this message\n";
 }
@@ -75,6 +76,7 @@ Args parse_args(int argc, char* argv[]) {
 		else if (opt == "--cache-index-and-filter-blocks") args.cache_index_and_filter_blocks = true;
 		else if (opt == "--direct-writes") args.direct_writes = true;
 		else if (opt == "--compact-before-queries") args.compact_before_queries = true;
+		else if (opt == "--no-compact-before-queries") args.compact_before_queries = false;
 		else if (opt == "--keep-db") args.keep_db = true;
 		else if (opt == "--db-dir") args.db_dir = option_value(argc, argv, i);
 		else if (opt == "--write-buffer-size") args.write_buffer_size = bytes();
@@ -276,7 +278,8 @@ void insertions_then_queries(const Args& args) {
 		store.compact();
 		const Ms compaction = Clock::now() - t0;
 		log << "Compaction, time " << compaction.count() << "\n"
-		    << "Phase I/O: " << io_details(ProcIOStats::read_current() - io_phase) << "\n";
+		    << "Phase I/O: " << io_details(ProcIOStats::read_current() - io_phase) << "\n"
+		    << "Insertions + compaction, time " << (insertions_total + compaction).count() << "\n";
 	}
 
 	/******************************** Queries ********************************/

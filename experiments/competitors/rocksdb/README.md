@@ -56,7 +56,7 @@ Everything not listed here is RocksDB v11.13.2's default.
 | `--direct-reads` | `Options::use_direct_reads` | false |
 | `--direct-writes` | `Options::use_direct_io_for_flush_and_compaction` | false |
 | `--sync` | `WriteOptions::sync` | false |
-| `--compact-before-queries` | `DB::CompactRange(CompactRangeOptions(), nullptr, nullptr)` after the insertions, timed and logged separately as `Compaction` | off |
+| `--no-compact-before-queries` | skip the `DB::CompactRange(CompactRangeOptions(), nullptr, nullptr)` that runs after the insertions; by default it runs, timed and logged separately as `Compaction`, followed by `Insertions + compaction, time` (use that for insertion throughput) | compact |
 | `--db-dir PATH` | database directory, `DestroyDB` before each experiment and after it (unless `--keep-db`) | `rocksdb_bench_db` |
 
 Fixed by the driver:
@@ -81,8 +81,8 @@ Name: `rocksdb_<write buffer>_<block size>_<cache>_<bloom bits>_<key dist>_<quer
 (interleaved: `rocksdb_interleaved_<write buffer>_<block size>_<cache>_<bloom bits>_<ins>_<queries>_exp_<N>.txt`),
 in the current directory, or `--log-file`.
 
-RocksDB-specific lines: `disk bytes` at each insertion checkpoint and batch, `Compaction` (with
-`--compact-before-queries`), and at the end memtable, table-reader and block-cache memory, `RocksDB disk
+RocksDB-specific lines: `disk bytes` at each insertion checkpoint and batch, `Compaction` and `Insertions + compaction` (unless
+`--no-compact-before-queries`), and at the end memtable, table-reader and block-cache memory, `RocksDB disk
 bytes`, files per level and `rocksdb.stats`.
 
 ## Notes
@@ -91,5 +91,6 @@ bytes`, files per level and `rocksdb.stats`.
   page cache like PaCHash's default `O_DIRECT`. The default (off) is RocksDB's own; state the setting
   with every result.
 - RocksDB flushes and compacts in background threads, so work started by the insertions can continue into
-  the query phase. `--compact-before-queries` finishes it first and logs its cost separately.
+  the query phase. By default the driver finishes it with a full compaction before the queries and logs its cost
+  separately (`--no-compact-before-queries` skips this).
 - With the default 64 MiB write buffer, small runs never flush to disk (everything stays in the memtable).

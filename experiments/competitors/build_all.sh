@@ -5,18 +5,30 @@
 # Usage: experiments/competitors/build_all.sh
 #   COMPETITORS  which ones (default: "leveldb rocksdb pachash leanstore stxxl silt")
 #   JOBS         parallel compile jobs per build (default: all cores; RocksDB needs ~1 GB RAM per job)
-#   PACHASH_BLOCK_LENGTH, PACHASH_WITH_URING   passed on to pachash/build.sh (see pachash/README.md)
+#   BLOCK        I/O block size in bytes for the competitors whose block size is fixed at compile time
+#                (default: 32768 = BOA_BLOCK_SIZE; must equal run_all.sh's BLOCK):
+#                PaCHash block length, STXXL map node/leaf blocks, STXXL unordered_map sub-blocks
+#                (with 2 MiB / BLOCK sub-blocks per block, STXXL's default block of 2 MiB)
+#   PACHASH_BLOCK_LENGTH, STXXL_MAP_NODE_BLOCK_SIZE, STXXL_MAP_LEAF_BLOCK_SIZE, STXXL_UM_SUB_BLOCK_SIZE,
+#   STXXL_UM_SUB_BLOCKS_PER_BLOCK   override single values (default: from BLOCK, see above)
+#   PACHASH_WITH_URING   passed on to pachash/build.sh (see pachash/README.md)
 #
 # Needs git, CMake ≥ 3.25, a C++20 compiler and the system packages listed in README.md
-# ("System packages"); on Ubuntu/Debian:
-#   sudo apt-get install build-essential cmake git libtbb-dev libaio-dev libxerces-c-dev libssl-dev \
-#                        libgsl-dev libboost-dev
+# ("System packages"); on Ubuntu/Debian: experiments/competitors/install_dependencies.sh
 # A failing build does not stop the others; the summary at the end lists each result.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 COMPETITORS="${COMPETITORS:-leveldb rocksdb pachash leanstore stxxl silt}"
+BLOCK="${BLOCK:-32768}"
+export PACHASH_BLOCK_LENGTH="${PACHASH_BLOCK_LENGTH:-$BLOCK}"
+export STXXL_MAP_NODE_BLOCK_SIZE="${STXXL_MAP_NODE_BLOCK_SIZE:-$BLOCK}"
+export STXXL_MAP_LEAF_BLOCK_SIZE="${STXXL_MAP_LEAF_BLOCK_SIZE:-$BLOCK}"
+export STXXL_UM_SUB_BLOCK_SIZE="${STXXL_UM_SUB_BLOCK_SIZE:-$BLOCK}"
+um_per_block=$((2097152 / BLOCK)); ((um_per_block < 1)) && um_per_block=1
+export STXXL_UM_SUB_BLOCKS_PER_BLOCK="${STXXL_UM_SUB_BLOCKS_PER_BLOCK:-$um_per_block}"
+echo "Block sizes: PaCHash $PACHASH_BLOCK_LENGTH, STXXL map node/leaf $STXXL_MAP_NODE_BLOCK_SIZE/$STXXL_MAP_LEAF_BLOCK_SIZE, STXXL unordered_map sub-block $STXXL_UM_SUB_BLOCK_SIZE x $STXXL_UM_SUB_BLOCKS_PER_BLOCK"
 LOGS="$ROOT/build-competitors/logs"
 mkdir -p "$LOGS"
 
