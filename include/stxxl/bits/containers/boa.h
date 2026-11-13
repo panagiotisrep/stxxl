@@ -1297,7 +1297,7 @@ STXXL_BEGIN_NAMESPACE
             auto total_runs = new_space_run + 1 + existing_runs;
             if (total_runs >= RunsPerTier) {
               changed_target_tier = true;
-              for (int r=0 ; r < std::max(RunsPerTier, tier.m_runs.size()) ; r++) {
+              for (int r=0 ; r < tier.m_runs.size() ; r++) { // only existing runs (was std::max(RunsPerTier, size): read past the end)
                 if (tier.m_runs[r].active) {
                   displacements.push_back({tier.m_level, tier.m_level, r});
                 }
@@ -1309,7 +1309,7 @@ STXXL_BEGIN_NAMESPACE
             auto existing_runs = active_runs(tier);
             if (existing_runs + 1 >= RunsPerTier) {
               changed_target_tier = true;
-              for (int r=0 ; r < std::max(RunsPerTier, tier.m_runs.size()); r++) {
+              for (int r=0 ; r < tier.m_runs.size(); r++) { // only existing runs (was std::max(RunsPerTier, size): read past the end)
                 if (tier.m_runs[r].active) {
                   displacements.push_back({tier.m_level, tier.m_level, r});
                 }
