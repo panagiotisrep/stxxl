@@ -40,7 +40,7 @@ Settings come in two kinds:
 | `--log-file PATH` | generated                              | Results file. Used as given (appended to if it exists). Default name is built from the parameters plus `_exp_N`. |
 | `--no-io-details` | off                                    | Omit per-checkpoint I/O details from the results file |
 | `--boa-pv` | off                                    | Use `boa_pv.h` |
-| `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries to uniformly chosen keys inserted so far) instead of insert-then-query. Uses `--key-dist` and `--log-file`; `--query-dist` does not apply. |
+| `--interleaved` | off                                    | Run the interleaved benchmark (batches of insertions, each followed by queries to uniformly chosen keys inserted so far) instead of insert-then-query. Uses `--key-dist` and `--log-file`. With `--query-dist NAME` (one distribution, not `shuffled`) each batch's queries are drawn from that distribution over the keys inserted so far (generated before the batch's timer starts); without it, uniform `rand()` over the inserted keys, as in the competitor drivers. The log says which (`Query distribution …`). |
 | `--insertions-per-batch N` | 50000                                  | With `--interleaved`: insertions per batch |
 | `--queries-per-batch N` | 2000                                   | With `--interleaved`: queries per batch (capped by the number of keys inserted so far) |
 | `--suspended` | off                                    | Online-suspended mode (see [Online-suspended mode](#online-suspended-mode)) |
@@ -64,6 +64,7 @@ exit with code 1.
 
 # interleaved: insert-heavy, balanced and query-heavy phases
 ./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 2000
+./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 2000 --query-dist latest   # recent keys
 ./boa --boa-pv --interleaved --insertions-per-batch 50000 --queries-per-batch 50000
 ./boa --boa-pv --interleaved --insertions-per-batch 500   --queries-per-batch 50000 --size 100000  # 200 batches
 
@@ -77,11 +78,11 @@ exit with code 1.
 
 - `insertions_then_queries_benchmark` (called by `main`): insert all keys, then run each query distribution.
 - `insertions_with_queries_benchmark` (with `--interleaved`): repeats until `--size` keys are inserted:
-  insert `--insertions-per-batch` keys, then run `--queries-per-batch` lookups of random keys inserted so
-  far. Logs one line per batch (insertion time, query time, I/O details, structure size, merges).
-  It always uses uniform keys and random queries, and ignores `--queries`, `--key-dist`, `--query-dist`,
-  `--log-file` and the `--output-every-*` options. Results go to
-  `boa_interleaved[_pv][_static…]_<λ>_<mult>_<pages>_<block size>_<insertions per batch>_<queries per batch>_exp_<N>.txt`.
+  insert `--insertions-per-batch` keys, then run `--queries-per-batch` lookups of keys inserted so far
+  (uniform `rand()`, or drawn from `--query-dist NAME` over the inserted keys). Logs one line per batch
+  (insertion time, query time, I/O details, structure size, merges). Uses `--key-dist` and `--log-file`;
+  ignores `--queries` and the `--output-every-*` options. Without `--log-file`, results go to
+  `boa_interleaved[_pv][_static…]_<λ>_<mult>_<pages>_<block size>_<insertions per batch>_<queries per batch>[_<query dist>]_exp_<N>.txt`.
 
 ### What the results file contains
 

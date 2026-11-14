@@ -525,7 +525,12 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
                                        const int size, const int buffer_size, const int n_insertions_per_batch,
                                        const int k_queries_per_batch,
                                        const KeyDistribution key_dist = KeyDistribution::UniformRandom,
-                                       const std::string& log_filename = "") {
+                                       const std::string& log_filename = "",
+                                       const QueryDistribution* query_dist = nullptr) {
+	// query_dist == nullptr: each query is data[rand() % inserted] (uniform over the keys inserted so far,
+	// the same rand() sequence as the competitor drivers). Otherwise every batch's queries come from
+	// generate_queries(*query_dist, keys inserted so far, ...) (workloads.h), generated before the batch's
+	// timer starts, so their generation is not measured.
 	Boa boa(buffer_size);
 
 	/**************************** create data *****************************/
@@ -544,7 +549,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	               + "_" + std::to_string(pages)
 	               + "_" + std::to_string(block_size)
 	               + "_" + std::to_string(n_insertions_per_batch)
-	               + "_" + std::to_string(k_queries_per_batch) + ".txt";
+	               + "_" + std::to_string(k_queries_per_batch)
+	               + (query_dist ? std::string("_") + to_string(*query_dist) : std::string()) + ".txt";
 
 	const std::string filename = log_filename.empty() ? get_available_filename(tmp_filename) : log_filename;
 
@@ -574,6 +580,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			<< "\nBlock size " << block_size
 			<< "\nInsertions per batch: " << n_insertions_per_batch
 			<< "\nQueries per batch: " << k_queries_per_batch
+			<< "\nQuery distribution " << (query_dist ? to_string(*query_dist) : "rand (uniform over inserted keys)")
 			<< "\nKey distribution " << to_string(key_dist)
 			<< "\nKeys checksum " << keys_checksum(data)
 			<< "\n";
@@ -587,6 +594,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			<< "\nBlock size " << block_size
 			<< "\nInsertions per batch: " << n_insertions_per_batch
 			<< "\nQueries per batch: " << k_queries_per_batch
+			<< "\nQuery distribution " << (query_dist ? to_string(*query_dist) : "rand (uniform over inserted keys)")
 			<< "\n";
 
 	Stats = stxxl::stats::get_instance();
@@ -598,8 +606,20 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	if (suspended_mode)
 		boa.reserve_lazy_space_for_elements(size);
 
+	std::vector<KeyType> inserted_keys; // with query_dist: the keys inserted so far, in insertion order
+	std::vector<KeyType> batch_queries;
+
 	while (total_processed < size) {
 		++batch_no;
+
+		// queries of this batch, over the keys inserted up to the end of its insertions (not timed)
+		const int batch_end = std::min(total_processed + n_insertions_per_batch, size);
+		if (query_dist) {
+			inserted_keys.insert(inserted_keys.end(), data.begin() + total_processed, data.begin() + batch_end);
+			generate_queries(*query_dist, inserted_keys, batch_queries,
+			                 static_cast<std::size_t>(std::min(k_queries_per_batch, batch_end)));
+		}
+
 		stxxl::stats_data stats_begin_batch(*Stats);
 
 		/************************* Combined Insertions and Queries ***************************/
@@ -629,9 +649,10 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 		auto t_start_queries = std::chrono::high_resolution_clock::now();
 		stxxl::stats_data stats_begin_batch_queries(*Stats);
 
-		int actual_queries = std::min(k_queries_per_batch, total_processed);
+		int actual_queries = query_dist ? static_cast<int>(batch_queries.size())
+		                                : std::min(k_queries_per_batch, total_processed);
 		for (int q = 0; q < actual_queries; ++q) {
-			KeyType const &key = data[rand() % total_processed];
+			KeyType const &key = query_dist ? batch_queries[q] : data[rand() % total_processed];
 			auto value = boa.find(key);
 			if (!value || value->first != key) {
 				std::cout << "Batch " << batch_no << ": query error for key " << key << "\n";
@@ -755,6 +776,7 @@ struct BenchmarkArgs {
 	bool boa_pv = false;
 	KeyDistribution key_dist = KeyDistribution::UniformRandom;
 	std::vector<QueryDistribution> query_dists = {QueryDistribution::Shuffled};
+	bool query_dist_set = false; // --query-dist given (with --interleaved: one distribution, not shuffled)
 	double routing_filter_mult = 1;
 	bool io_details = true;
 	std::string log_filename; // empty: generated from the parameters
@@ -796,6 +818,9 @@ void print_usage(const char* prog) {
 		<< "\n  --interleaved             run batches of insertions followed by queries (default " << (defaults.interleaved ? "on" : "off") << ")"
 		<< "\n  --insertions-per-batch N  with --interleaved: insertions per batch (default " << defaults.insertions_per_batch << ")"
 		<< "\n  --queries-per-batch N     with --interleaved: queries per batch (default " << defaults.queries_per_batch << ")"
+		<< "\n                            with --interleaved, --query-dist NAME (one, not shuffled) draws each batch's"
+		<< "\n                            queries from that distribution over the keys inserted so far; without it,"
+		<< "\n                            uniform rand() over the inserted keys (as the competitor drivers)"
 		<< "\n  --suspended               online-suspended mode: lazy_insert + consolidate_structure (default "
 		<< (defaults.suspended ? "on" : "off") << ")"
 		<< "\n  --materialization NAME    suspended-mode materialization: merge, sort, hybrid (default "
@@ -896,9 +921,11 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 				ok = from_string(value, args.key_dist);
 			}
 			else if (value == "all") {
+				args.query_dist_set = true;
 				args.query_dists.assign(std::begin(all_query_distributions), std::end(all_query_distributions));
 			}
 			else {
+				args.query_dist_set = true;
 				args.query_dists.clear();
 				std::stringstream names(value);
 				std::string name;
@@ -948,6 +975,11 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 			std::exit(1);
 		}
 	}
+	if (args.interleaved && args.query_dist_set
+	    && (args.query_dists.size() != 1 || args.query_dists.front() == QueryDistribution::Shuffled)) {
+		std::cerr << "--interleaved takes one --query-dist other than shuffled (shuffled returns every inserted key)\n";
+		std::exit(1);
+	}
 	return args;
 }
 
@@ -962,7 +994,8 @@ void run_experiments(const BenchmarkArgs& args) {
 		if (args.interleaved) {
 			insertions_with_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
 			                                       args.insertions_per_batch, args.queries_per_batch,
-			                                       args.key_dist, args.log_filename);
+			                                       args.key_dist, args.log_filename,
+			                                       args.query_dist_set ? &args.query_dists.front() : nullptr);
 		} else {
 			insertions_then_queries_benchmark<Boa>(pages, page_size, block_size, lambda, size, buffer_size,
 			                                       args.queries_no, args.output_every_inserts, args.output_every_queries,
