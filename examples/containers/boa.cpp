@@ -15,8 +15,8 @@
 // #define BOA_OPT
 // #define IN_MEMORY_SORT
 // #define ONLINE_SUSPENDED_MODE        // default for --suspended
-// #define SORT_BASED_MATERIALIZATION   // default for --materialization (sort)
-// #define HYBRID_MATERIALIZATION       // default for --materialization (hybrid)
+// #define MERGE_BASED_MATERIALIZATION  // default for --materialization (merge)
+// #define SORT_BASED_MATERIALIZATION   // default for --materialization (sort); without either: hybrid
 
 
 

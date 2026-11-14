@@ -29,30 +29,57 @@
 # the same value). BOA_BLOCK_SIZE, BOA_LAMBDA, BOA_PAGES need a rebuild, see boa.md.
 boa                  boa   --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 boa_pv               boa   --boa-pv --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
-boa_suspended        boa   --suspended --materialization merge --routing-filter-mult 1
-boa_pv_suspended     boa   --boa-pv --suspended --materialization merge --routing-filter-mult 1
+boa_suspended        boa   --suspended --materialization hybrid --routing-filter-mult 1
+boa_pv_suspended     boa   --boa-pv --suspended --materialization hybrid --routing-filter-mult 1
+# Online-suspended and interleaved: consolidate_structure() after every batch (compare with rocksdb_bulk_il).
+# Other materializations: copy a line and change --materialization (merge, sort, hybrid).
+boa_suspended_il     boa   --suspended --materialization hybrid --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_pv_suspended_il  boa   --boa-pv --suspended --materialization hybrid --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # LevelDB: memtable + immutable memtable = M/2, block cache = M/2. No Bloom filter: LevelDB keeps filters
 # outside its cache (unbounded), so a filter would be memory beyond M. No direct I/O in LevelDB.
 # Full compaction before the queries (driver default; timed as "Compaction").
 leveldb              leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# LevelDB with batched writes (--write-batch): 1000 keys per leveldb::WriteBatch, i.e. one DB::Write, one
+# log record and one memtable insertion step per 1000 keys; the rest of every interleaved batch is
+# written before its queries. Compaction still runs automatically (LevelDB cannot postpone it).
+# 1000 keys keep the memtable overshoot small (it may exceed write_buffer_size by one WriteBatch).
+leveldb_batch        leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --write-batch 1000 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+#   leveldb_batch       interleaved (compare with boa, rocksdb)
+#   leveldb_batch_then  insert-then-query, all query distributions (compare with boa_suspended, rocksdb_bulk)
+leveldb_batch_then   leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --write-batch 1000
 
 # RocksDB: 2 memtables = M/2, block cache = M/2 including index and filter blocks (so a Bloom filter
 # lives inside M), direct I/O for reads, flushes and compactions, one background job.
+# Buffers outside the cache cut to one block: compaction read-ahead per input file (RocksDB default 2 MiB)
+# and write buffer per file being written (default 1 MiB); with the defaults RocksDB used 21 MB (77 MB in
+# bulk mode) above the key set at 300k keys, with one block each 6.5 MB (8 MB).
 # Without --bloom-bits: no filter (with 10 bits/key the filters do not fit in M/2 at 2M keys).
-rocksdb              rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
-rocksdb_bloom        rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --bloom-bits 10 --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb              rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb_bloom        rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --bloom-bits 10 --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# RocksDB bulk load (--bulk-load), its counterpart of BOA's online-suspended mode: automatic compaction
+# off, insertions only fill memtables and L0 files, one full compaction (CompactRange) consolidates.
+#   rocksdb_bulk     insert-then-query, one compaction after all insertions (compare with boa_suspended)
+#   rocksdb_bulk_il  interleaved, a compaction after every batch, counted as insertion time
+#                    (compare with boa_suspended_il)
+rocksdb_bulk         rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --bulk-load
+rocksdb_bulk_il      rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --bulk-load --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # LeanStore: buffer pool = M; plain B-tree, no transactions/WAL (BOA has neither); one worker thread.
-# Page size fixed at 4 KiB.
-leanstore            leanstore/leanstore_bench   --dram_gib={M_GIB} --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# Page size fixed at 4 KiB. Buffers outside the pool cut down: WAL buffer (allocated even without WAL,
+# default 10 MiB) to one block, page-provider write buffer from 1024 to 32 pages, 2 instead of 64
+# buffer partitions; this took LeanStore from 44 MB to 19 MB above the key set (the rest is fixed).
+leanstore            leanstore/leanstore_bench   --dram_gib={M_GIB} --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # STXXL B+-tree: node cache + leaf cache = M. Node/leaf block size is compile time (32 KiB).
 stxxl_map            stxxl/stxxl_map_bench   --node-cache {M/2} --leaf-cache {M/2} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
-# STXXL unordered_map: buffer = M. Buckets: STXXL's own rehash target N / (entries per sub-block * 0.875);
+# STXXL unordered_map: insertion buffer = M/2, block cache = M/2 (stxxl::hash_map::tuning, in blocks; STXXL's
+# default is 12 blocks), prefetching 1 page of 1 block (default 2 x 2 blocks). Built with 1 sub-block per
+# block (build_all.sh), so its block, the unit it caches and reads, is BLOCK.
+# Buckets: STXXL's own rehash target N / (entries per sub-block * 0.875);
 # the map never rehashes by itself. Entry = 8 bytes (uint32_t key + char value, padded).
-stxxl_unordered_map  stxxl/stxxl_unordered_map_bench   --buffer-size {M} --initial-buckets {(SIZE * 64 + BLOCK * 7 - 1) / (BLOCK * 7)} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_unordered_map  stxxl/stxxl_unordered_map_bench   --buffer-size {M/2} --block-cache-blocks {M/2/BLOCK > 0 ? M/2/BLOCK : 1} --prefetch-page-size 1 --prefetch-pages 1 --initial-buckets {(SIZE * 64 + BLOCK * 7 - 1) / (BLOCK * 7)} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # SILT: its memory use is not configurable (SILT's own configuration, direct I/O).
 silt_combi           silt/silt_bench   --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}

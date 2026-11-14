@@ -5,10 +5,16 @@
 
 boa                  boa   --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 boa_pv               boa   --boa-pv --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
-boa_suspended        boa   --suspended --materialization merge --routing-filter-mult 1
-boa_pv_suspended     boa   --boa-pv --suspended --materialization merge --routing-filter-mult 1
+boa_suspended        boa   --suspended --materialization hybrid --routing-filter-mult 1
+boa_pv_suspended     boa   --boa-pv --suspended --materialization hybrid --routing-filter-mult 1
+boa_suspended_il     boa   --suspended --materialization hybrid --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_pv_suspended_il  boa   --boa-pv --suspended --materialization hybrid --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 leveldb              leveldb/leveldb_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leveldb_batch        leveldb/leveldb_bench  --write-batch 1000 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leveldb_batch_then   leveldb/leveldb_bench  --write-batch 1000
 rocksdb              rocksdb/rocksdb_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb_bulk         rocksdb/rocksdb_bench  --bulk-load
+rocksdb_bulk_il      rocksdb/rocksdb_bench  --bulk-load --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 leanstore            leanstore/leanstore_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 stxxl_map            stxxl/stxxl_map_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 stxxl_unordered_map  stxxl/stxxl_unordered_map_bench  --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}

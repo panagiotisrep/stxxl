@@ -10,6 +10,7 @@
 #include <leveldb/db.h>
 #include <leveldb/filter_policy.h>
 #include <leveldb/options.h>
+#include <leveldb/write_batch.h>
 
 #include "common.h"
 
@@ -33,6 +34,7 @@ struct Args {
 	int bloom_bits = 0;    // 0: no filter policy (LevelDB default)
 	bool sync = false;     // WriteOptions::sync (LevelDB default: false)
 	bool compact_before_queries = true;
+	int write_batch = 0;   // 0: one DB::Put per key (LevelDB default usage); N: N keys per leveldb::WriteBatch
 	bool keep_db = false;
 };
 
@@ -52,6 +54,10 @@ void print_usage(const char* prog) {
 		<< "\n  --sync                    WriteOptions::sync = true (default false)"
 		<< "\n  --no-compact-before-queries  skip the CompactRange over the whole key range that runs after the"
 		<< "\n                              insertions (default: compact; timed separately as Compaction)"
+		<< "\n  --write-batch N           insert through leveldb::WriteBatch: N keys per DB::Write call (one log"
+		<< "\n                            record, one memtable insertion step); the last, partial batch is written"
+		<< "\n                            at the end of the insertions / of every interleaved batch (default 0: off,"
+		<< "\n                            one DB::Put per key, which LevelDB executes as a WriteBatch of 1)"
 		<< "\n  --keep-db                 do not destroy the database after the experiment"
 		<< "\n  --help                    show this message\n";
 }
@@ -69,6 +75,7 @@ Args parse_args(int argc, char* argv[]) {
 		else if (opt == "--compact-before-queries") args.compact_before_queries = true;
 		else if (opt == "--no-compact-before-queries") args.compact_before_queries = false;
 		else if (opt == "--keep-db") args.keep_db = true;
+		else if (opt == "--write-batch") args.write_batch = positive_int();
 		else if (opt == "--db-dir") args.db_dir = option_value(argc, argv, i);
 		else if (opt == "--write-buffer-size") args.write_buffer_size = bytes();
 		else if (opt == "--max-file-size") args.max_file_size = bytes();
@@ -129,8 +136,23 @@ public:
 
 	void insert(KeyType k) {
 		const EncodedKey key(k);
-		const leveldb::Status s = db_->Put(write_options_, key.slice(), kValue);
-		if (!s.ok()) fail("Put failed: " + s.ToString());
+		if (args_.write_batch == 0) {
+			const leveldb::Status s = db_->Put(write_options_, key.slice(), kValue);
+			if (!s.ok()) fail("Put failed: " + s.ToString());
+			return;
+		}
+		batch_.Put(key.slice(), kValue); // copied into the batch's buffer
+		if (++batched_ == args_.write_batch) flush_batch();
+	}
+
+	// Writes the pending WriteBatch (if any) with one DB::Write. Called when it is full, and at the end
+	// of the insertions / of every interleaved batch, so that queries see every inserted key.
+	void flush_batch() {
+		if (batched_ == 0) return;
+		const leveldb::Status s = db_->Write(write_options_, &batch_);
+		if (!s.ok()) fail("Write failed: " + s.ToString());
+		batch_.Clear();
+		batched_ = 0;
 	}
 
 	bool find(KeyType k) {
@@ -174,6 +196,7 @@ public:
 		   << "\nLevelDB verify_checksums " << read_options_.verify_checksums
 		   << "\nLevelDB fill_cache " << read_options_.fill_cache
 		   << "\nLevelDB compact before queries " << args_.compact_before_queries
+		   << "\nLevelDB write batch " << args_.write_batch << (args_.write_batch ? " keys per WriteBatch" : " (off: one Put per key)")
 		   << "\nKey encoding " << sizeof(KeyType) << "-byte big-endian, value 1 byte\n";
 		return ss.str();
 	}
@@ -184,6 +207,8 @@ private:
 	std::unique_ptr<const leveldb::FilterPolicy> filter_;
 	leveldb::Options options_;
 	leveldb::WriteOptions write_options_;
+	leveldb::WriteBatch batch_;
+	int batched_ = 0;
 	leveldb::ReadOptions read_options_;
 	std::unique_ptr<leveldb::DB> db_;
 	std::string value_;
@@ -217,6 +242,7 @@ void insertions_then_queries(const Args& args) {
 
 	Log log(filename);
 
+	memory_baseline(args.w); // keys generated, structure not yet created
 	LevelDbStore store(args);
 	const ProcIOStats os_before = ProcIOStats::read_current();
 	const auto t_start = Clock::now();
@@ -249,6 +275,7 @@ void insertions_then_queries(const Args& args) {
 		}
 		store.insert(d);
 	}
+	store.flush_batch();
 	const Ms insertions_total = Clock::now() - t_start_insertions;
 	log << "End Insertions, time " << insertions_total.count() << "\n"
 	    << "Phase I/O: " << io_details(ProcIOStats::read_current() - io_phase) << "\n";
@@ -301,12 +328,12 @@ void insertions_then_queries(const Args& args) {
 	std::cout << "Output file [" << filename << "]\n";
 }
 
-// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: uniform keys, and query keys
-// picked with rand() exactly as boa does (same glibc sequence, never reseeded).
+// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: keys from --key-dist, and
+// query keys picked with rand() exactly as boa does (same glibc sequence, never reseeded).
 void insertions_with_queries(const Args& args) {
 	const int size = args.w.size;
 	std::vector<KeyType> data;
-	uniform_random_data(data, size);
+	generate_data(args.w.key_dist, data, size);
 
 	const std::string tmp_filename = "leveldb_interleaved_"
 		+ std::to_string(args.write_buffer_size) + "_" + std::to_string(args.block_size)
@@ -316,12 +343,14 @@ void insertions_with_queries(const Args& args) {
 
 	Log log(filename);
 
+	memory_baseline(args.w); // keys generated, structure not yet created
 	LevelDbStore store(args);
 	const ProcIOStats os_before = ProcIOStats::read_current();
 	const auto t_start = Clock::now();
 
 	log << "Interleaved Start LevelDB"
 	    << "\nElements: " << data.size()
+	    << "\nKey distribution " << to_string(args.w.key_dist)
 	    << "\nInsertions per batch: " << args.w.insertions_per_batch
 	    << "\nQueries per batch: " << args.w.queries_per_batch
 	    << "\nKeys checksum " << checksum(data)
@@ -340,6 +369,7 @@ void insertions_with_queries(const Args& args) {
 			store.insert(data[i]);
 			++n_inserted;
 		}
+		store.flush_batch();
 		total_processed = insert_end;
 		const ProcIOStats insert_io = ProcIOStats::read_current() - io_batch;
 		const Ms insert_elapsed = Clock::now() - t_start_batch;

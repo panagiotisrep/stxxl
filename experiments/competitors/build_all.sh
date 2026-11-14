@@ -8,7 +8,7 @@
 #   BLOCK        I/O block size in bytes for the competitors whose block size is fixed at compile time
 #                (default: 32768 = BOA_BLOCK_SIZE; must equal run_all.sh's BLOCK):
 #                PaCHash block length, STXXL map node/leaf blocks, STXXL unordered_map sub-blocks
-#                (with 2 MiB / BLOCK sub-blocks per block, STXXL's default block of 2 MiB)
+#                (with 1 sub-block per block, so that its block, the unit it caches, is BLOCK too)
 #   PACHASH_BLOCK_LENGTH, STXXL_MAP_NODE_BLOCK_SIZE, STXXL_MAP_LEAF_BLOCK_SIZE, STXXL_UM_SUB_BLOCK_SIZE,
 #   STXXL_UM_SUB_BLOCKS_PER_BLOCK   override single values (default: from BLOCK, see above)
 #   PACHASH_WITH_URING   passed on to pachash/build.sh (see pachash/README.md)
@@ -26,7 +26,7 @@ export PACHASH_BLOCK_LENGTH="${PACHASH_BLOCK_LENGTH:-$BLOCK}"
 export STXXL_MAP_NODE_BLOCK_SIZE="${STXXL_MAP_NODE_BLOCK_SIZE:-$BLOCK}"
 export STXXL_MAP_LEAF_BLOCK_SIZE="${STXXL_MAP_LEAF_BLOCK_SIZE:-$BLOCK}"
 export STXXL_UM_SUB_BLOCK_SIZE="${STXXL_UM_SUB_BLOCK_SIZE:-$BLOCK}"
-um_per_block=$((2097152 / BLOCK)); ((um_per_block < 1)) && um_per_block=1
+um_per_block=1 # one sub-block per block: the unordered_map block is BLOCK (it caches whole blocks)
 export STXXL_UM_SUB_BLOCKS_PER_BLOCK="${STXXL_UM_SUB_BLOCKS_PER_BLOCK:-$um_per_block}"
 echo "Block sizes: PaCHash $PACHASH_BLOCK_LENGTH, STXXL map node/leaf $STXXL_MAP_NODE_BLOCK_SIZE/$STXXL_MAP_LEAF_BLOCK_SIZE, STXXL unordered_map sub-block $STXXL_UM_SUB_BLOCK_SIZE x $STXXL_UM_SUB_BLOCKS_PER_BLOCK"
 LOGS="$ROOT/build-competitors/logs"

@@ -49,6 +49,7 @@ Everything not listed here is LevelDB 1.23's default.
 | `--bloom-bits N` | `Options::filter_policy = NewBloomFilterPolicy(N)` | no filter |
 | `--sync` | `WriteOptions::sync` | false |
 | `--no-compact-before-queries` | skip the `DB::CompactRange(nullptr, nullptr)` that runs after the insertions; by default it runs, timed and logged separately as `Compaction`, followed by `Insertions + compaction, time` (use that for insertion throughput) | compact |
+| `--write-batch N` | insert through `leveldb::WriteBatch`: N keys per `DB::Write` (one write-ahead-log record, one memtable insertion step); the partial last batch is written at the end of the insertions and of every interleaved batch, before its queries. Compaction is still automatic. The memtable can exceed `write_buffer_size` by up to one batch | 0 (off: one `DB::Put` per key) |
 | `--db-dir PATH` | database directory, `DestroyDB` before each experiment and after it (unless `--keep-db`) | `leveldb_bench_db` |
 
 Fixed by the driver:

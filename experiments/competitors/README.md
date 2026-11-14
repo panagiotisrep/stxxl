@@ -175,14 +175,34 @@ with every result; each results file already contains them.
 3. **Same mode.** Online and interleaved runs: BOA online against LevelDB, RocksDB, LeanStore, STXXL map,
    STXXL unordered_map and SILT `--mode combi`. Bulk loading: BOA `--suspended` / `--materialization`
    against PaCHash and SILT `--mode sorted`.
-4. **Same memory budget M.** Take M from BOA: run `boa` with the configuration you report and read
-   `Max internal memory bytes`. Give each competitor M through its own memory options (table below).
-   Also run **every system, `boa` included, under the same cgroup memory limit** (`MEMORY_MAX` in the
-   `run.sh` scripts, or `systemd-run --scope -p MemoryMax=…` for `boa`). The limit includes the page
-   cache, so systems without direct I/O (LevelDB) cannot use free RAM as extra cache. The limit must
-   also cover the benchmark's own arrays: about 4 bytes per key for the keys, 4 bytes per query for each
-   query list, a temporary copy of the keys made by some query generators, plus the process baseline.
-   Use roughly `MEMORY_MAX` = M + 12 bytes × N + 50 MB, and check `Peak RSS bytes` in the results.
+4. **Same memory budget M.** M is BOA's RAM in theory:
+   `M = (λ + 3) × Pages × PageSize × BlockSize` (`BOA_LAMBDA`, `BOA_PAGES`, page size 1,
+   `BOA_BLOCK_SIZE`), e.g. (16 + 3) × 2 × 1 × 32 KiB = 1,245,184 bytes. `run_all.sh` reads λ, Pages and
+   the block size from a tiny run of the `boa` binary used. (BOA's own `Max internal memory bytes`
+   counter reports more, which is an implementation matter and not used; `M_MODE=measured` would use it.)
+   The benchmark's own data, the whole key set (and the query lists), is outside M: it is the same in
+   `boa` and in every driver.
+   - **Give each competitor M** through its memory options (caches, buffer pool, memtables), and **cut
+     its other buffers** to about one block where it has an option for them (table below). Measured at
+     300k keys, memory above the key set:
+
+     | | defaults for those buffers | tuned (params_fair.txt) |
+     |---|---|---|
+     | RocksDB (interleaved / bulk load) | 21 MB / 77 MB (2 MiB compaction read-ahead per input file, 1 MiB write buffer per file) | 6.5 MB / 8.1 MB |
+     | LeanStore | 44 MB (10 MiB WAL buffer even without WAL, 1024-page write buffer, 64 partitions) | 19 MB (the rest is fixed) |
+     | STXXL unordered_map | 49 MB (12-block cache and 2 × 2 prefetch blocks, 2 MiB blocks) | 2.9 MB (32 KiB blocks, cache M/2) |
+
+   - **Measure, do not kill.** Every driver logs `Baseline RSS bytes` (RSS once its keys are generated,
+     before the structure exists), `Peak RSS bytes` and `Peak RSS above baseline bytes` (the structure's
+     memory, including mapped files such as LevelDB's tables). `run_all.sh` runs every competitor without
+     a memory limit and compares its memory with its budget `M + overhead + LIMIT_SLACK_MB` (4 MB), where
+     `overhead` is its fixed memory (code, libraries, threads) from a calibration run of the same command
+     with `CAL_SIZE` = 1000 keys. A run over budget still completes and is marked `over M` in
+     `summary.txt` (column structure/budget in MB) and in `params.txt`. Report those runs with their
+     memory. SILT's memory is not configurable at all, and PaCHash sorts all keys in RAM while building.
+   - For a hard limit instead, run a driver with `--baseline-file PATH`: it writes `<pid> <baseline>` to
+     PATH after generating its keys and stops itself until `SIGCONT`, so a cgroup limit of baseline + M
+     (e.g. `systemctl --user set-property <scope> MemoryMax=…`) can be set before the structure exists.
 5. **Direct I/O wherever possible.** `boa` / STXXL: `direct=on` in `.stxxl`
    (e.g. `disk=/data/stxxl,100G,syscall unlink direct=on`). RocksDB: `--direct-reads --direct-writes`.
    PaCHash, LeanStore, SILT: their defaults. LevelDB has no direct I/O; rule 4's limit is what bounds it.
@@ -202,16 +222,19 @@ with every result; each results file already contains them.
 
 ### Parameters per competitor (memory budget M in bytes)
 
+All of these are the lines of `experiments/params_fair.txt` (one run per line, `{...}` filled in by
+`run_all.sh`); edit that file to change them. B = `BLOCK` (32 KiB).
+
 | System | Build | Run parameters |
 |---|---|---|
-| BOA (`boa`) | Release, `BOA_BLOCK_SIZE` 32 KiB | default `--buffer-size` (the memory budget); `.stxxl` with `direct=on`; online, `--interleaved`, or `--suspended` / `--materialization …` |
-| LevelDB | `leveldb/build.sh` | `--write-buffer-size M/4` (memtable + immutable memtable = M/2; LevelDB's minimum is 64 KiB) `--cache-size M/2 --block-size 32768 --bloom-bits 10`; `MEMORY_MAX` (no direct I/O) |
-| RocksDB | `rocksdb/build.sh` | `--write-buffer-size M/4` (2 memtables = M/2) `--cache-size M/2 --cache-index-and-filter-blocks --bloom-bits 10 --block-size 32768 --direct-reads --direct-writes --max-background-jobs 1` |
-| PaCHash | `PACHASH_BLOCK_LENGTH=32768 pachash/build.sh` | `--io posix --queue-depth 1` (defaults; `O_DIRECT`); its index is far below M. Construction sorts all keys in RAM, so state that in the comparison with BOA's suspended mode |
-| LeanStore | `leanstore/build.sh` | `--dram_gib=<M / 2^30> --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false` |
-| STXXL map | `stxxl/build.sh` | `--node-cache M/2 --leaf-cache M/2` (each at least a few 32 KiB blocks); same `.stxxl` as `boa` |
-| STXXL unordered_map | `stxxl/build.sh` | `--buffer-size M`; set `--initial-buckets` deliberately (the default 10000 from `unordered_map1.cpp` means about 1000 keys per bucket at N = 10^7, and insertion was very slow in tests); same `.stxxl` as `boa` |
-| SILT | `silt/build.sh` | `--mode combi` (online, interleaved) or `--mode sorted` (bulk); direct I/O is the default. Its memory follows from its design (no budget option), so compare `Peak RSS bytes` and keep the same `MEMORY_MAX` |
+| BOA (`boa`) | Release, `-DBUILD_EXAMPLES=ON`; `BOA_BLOCK_SIZE` B, `BOA_LAMBDA`, `BOA_PAGES` | no `--buffer-size` (the default, B / element size, is its budget); online `--interleaved`; `--suspended --materialization merge\|sort\|hybrid`, insert-then-query or `--interleaved` |
+| LevelDB | `leveldb/build.sh` | `--write-buffer-size max(M/4, 64 KiB)` (memtable + immutable = M/2) `--cache-size M/2 --block-size B`, no Bloom filter (it would live outside the cache); compaction before queries (default). `leveldb_batch*`: `--write-batch 1000` (1000 keys per `WriteBatch`) |
+| RocksDB | `rocksdb/build.sh` | `--write-buffer-size M/4 --cache-size M/2 --cache-index-and-filter-blocks --block-size B --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size B --writable-file-max-buffer-size B`; `rocksdb_bloom`: `--bloom-bits 10`; `rocksdb_bulk*`: `--bulk-load` (automatic compaction off, one compaction after the insertions or after every interleaved batch) |
+| PaCHash | `build_all.sh` (block length B) | `--a 8 --io posix --queue-depth 1` (`O_DIRECT`); static. Construction sorts all keys in RAM |
+| LeanStore | `leanstore/build.sh` | `--dram_gib=M/2^30 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size=B --write_buffer_size=32 --partition_bits=1` (4 KiB pages, fixed) |
+| STXXL map | `build_all.sh` (node/leaf blocks B) | `--node-cache M/2 --leaf-cache M/2` |
+| STXXL unordered_map | `build_all.sh` (sub-block B, 1 sub-block per block) | `--buffer-size M/2 --block-cache-blocks M/2/B --prefetch-page-size 1 --prefetch-pages 1 --initial-buckets ⌈N·64/(B·7)⌉` (never needs to rehash) |
+| SILT | `silt/build.sh` | `--mode combi` (online, interleaved) or `--mode sorted` (static); memory not configurable |
 
 With small M (BOA's budget is a few MB), the LSM-trees get small memtables and therefore many small
 files and frequent compactions. That is the cost of equal memory, and it is why rule 9's out-of-the-box

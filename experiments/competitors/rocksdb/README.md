@@ -55,8 +55,11 @@ Everything not listed here is RocksDB v11.13.2's default.
 | `--cache-index-and-filter-blocks` | `BlockBasedTableOptions::cache_index_and_filter_blocks`: index and filter blocks live in (and count against) the block cache | false (they are kept outside the cache, unbounded) |
 | `--direct-reads` | `Options::use_direct_reads` | false |
 | `--direct-writes` | `Options::use_direct_io_for_flush_and_compaction` | false |
+| `--compaction-readahead-size B` | `Options::compaction_readahead_size`: read-ahead buffer per compaction input file (memory outside the block cache) | RocksDB's (2 MiB) |
+| `--writable-file-max-buffer-size B` | `Options::writable_file_max_buffer_size`: write buffer per file being written (WAL, flush and compaction output; memory outside the block cache) | RocksDB's (1 MiB) |
 | `--sync` | `WriteOptions::sync` | false |
 | `--no-compact-before-queries` | skip the `DB::CompactRange(CompactRangeOptions(), nullptr, nullptr)` that runs after the insertions; by default it runs, timed and logged separately as `Compaction`, followed by `Insertions + compaction, time` (use that for insertion throughput) | compact |
+| `--bulk-load` | bulk-load mode, RocksDB's counterpart of BOA's online-suspended mode: `Options::disable_auto_compactions = true` (insertions only fill memtables and flush them to L0 files; with auto compactions off RocksDB also applies no L0/pending-compaction write stalls), then a full `CompactRange` builds the levels: after all insertions (insert-then-query; logged as `Compaction` and `Insertions + compaction`, always run) or after every batch with `--interleaved` (counted in that batch's insertion time, like BOA's `consolidate_structure()`) | off |
 | `--db-dir PATH` | database directory, `DestroyDB` before each experiment and after it (unless `--keep-db`) | `rocksdb_bench_db` |
 
 Fixed by the driver:

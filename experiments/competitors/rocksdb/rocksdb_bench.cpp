@@ -34,8 +34,11 @@ struct Args {
 	bool cache_index_and_filter_blocks = rocksdb::BlockBasedTableOptions().cache_index_and_filter_blocks;
 	bool direct_reads = rocksdb::Options().use_direct_reads;
 	bool direct_writes = rocksdb::Options().use_direct_io_for_flush_and_compaction;
+	size_t compaction_readahead_size = rocksdb::Options().compaction_readahead_size;
+	size_t writable_file_max_buffer_size = rocksdb::Options().writable_file_max_buffer_size;
 	bool sync = false;          // WriteOptions::sync (RocksDB default: false)
 	bool compact_before_queries = true;
+	bool bulk_load = false;     // auto compactions off; CompactRange consolidates (see --bulk-load)
 	bool keep_db = false;
 };
 
@@ -55,9 +58,20 @@ void print_usage(const char* prog) {
 		<< "\n                            index/filter blocks count against --cache-size (default false)"
 		<< "\n  --direct-reads            Options::use_direct_reads = true (default false)"
 		<< "\n  --direct-writes           Options::use_direct_io_for_flush_and_compaction = true (default false)"
+		<< "\n  --compaction-readahead-size B  Options::compaction_readahead_size: read-ahead buffer per compaction"
+		<< "\n                            input file, in bytes (default " << d.compaction_readahead_size << ")"
+		<< "\n  --writable-file-max-buffer-size B  Options::writable_file_max_buffer_size: write buffer per file"
+		<< "\n                            being written (WAL, flush and compaction output), in bytes (default "
+		<< d.writable_file_max_buffer_size << ")"
 		<< "\n  --sync                    WriteOptions::sync = true (default false)"
 		<< "\n  --no-compact-before-queries  skip the CompactRange over the whole key range that runs after the"
 		<< "\n                              insertions (default: compact; timed separately as Compaction)"
+		<< "\n  --bulk-load               bulk-load mode, RocksDB's counterpart of BOA's online-suspended mode:"
+		<< "\n                            Options::disable_auto_compactions = true, so insertions only fill"
+		<< "\n                            memtables and flush them to L0 files; a full CompactRange then builds"
+		<< "\n                            the levels: after all insertions (insert-then-query; always, even with"
+		<< "\n                            --no-compact-before-queries) or after every batch (--interleaved, counted"
+		<< "\n                            in the batch's insertion time)"
 		<< "\n  --keep-db                 do not destroy the database after the experiment"
 		<< "\n  --help                    show this message\n";
 }
@@ -78,6 +92,7 @@ Args parse_args(int argc, char* argv[]) {
 		else if (opt == "--compact-before-queries") args.compact_before_queries = true;
 		else if (opt == "--no-compact-before-queries") args.compact_before_queries = false;
 		else if (opt == "--keep-db") args.keep_db = true;
+		else if (opt == "--bulk-load") args.bulk_load = true;
 		else if (opt == "--db-dir") args.db_dir = option_value(argc, argv, i);
 		else if (opt == "--write-buffer-size") args.write_buffer_size = bytes();
 		else if (opt == "--target-file-size") args.target_file_size_base = bytes();
@@ -85,8 +100,11 @@ Args parse_args(int argc, char* argv[]) {
 		else if (opt == "--block-size") args.block_size = bytes();
 		else if (opt == "--cache-size") args.cache_size = bytes();
 		else if (opt == "--bloom-bits") args.bloom_bits = positive_int();
+		else if (opt == "--compaction-readahead-size") args.compaction_readahead_size = bytes();
+		else if (opt == "--writable-file-max-buffer-size") args.writable_file_max_buffer_size = bytes();
 		else { print_usage(argv[0]); fail("Unknown option: " + opt); }
 	}
+	if (args.bulk_load) args.compact_before_queries = true; // the compaction is the consolidation step
 	return args;
 }
 
@@ -119,6 +137,11 @@ public:
 		options_.max_background_jobs = args.max_background_jobs;
 		options_.use_direct_reads = args.direct_reads;
 		options_.use_direct_io_for_flush_and_compaction = args.direct_writes;
+		// Bulk load: no automatic compaction. Without it RocksDB also applies no L0 file-count or
+		// pending-compaction write stalls, so L0 files accumulate until compact() is called.
+		options_.disable_auto_compactions = args.bulk_load;
+		options_.compaction_readahead_size = args.compaction_readahead_size;
+		options_.writable_file_max_buffer_size = args.writable_file_max_buffer_size;
 		options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options_));
 		// compression: left at RocksDB's default, which is Snappy only if RocksDB was built with it.
 		// rocksdb/build.sh builds without any compression library, so the default is kNoCompression.
@@ -187,11 +210,16 @@ public:
 		   << "\nRocksDB compression " << (options_.compression == rocksdb::kNoCompression ? "none" : "compressed")
 		   << "\nRocksDB use_direct_reads " << options_.use_direct_reads
 		   << "\nRocksDB use_direct_io_for_flush_and_compaction " << options_.use_direct_io_for_flush_and_compaction
+		   << "\nRocksDB compaction_readahead_size " << options_.compaction_readahead_size
+		   << "\nRocksDB writable_file_max_buffer_size " << options_.writable_file_max_buffer_size
+		   << "\nRocksDB arena_block_size " << options_.arena_block_size << " (0: write_buffer_size / 8)"
 		   << "\nRocksDB sync writes " << write_options_.sync
 		   << "\nRocksDB WAL " << (write_options_.disableWAL ? "off" : "on")
 		   << "\nRocksDB verify_checksums " << read_options_.verify_checksums
 		   << "\nRocksDB fill_cache " << read_options_.fill_cache
 		   << "\nRocksDB compact before queries " << args_.compact_before_queries
+		   << "\nRocksDB bulk load " << args_.bulk_load << " (disable_auto_compactions " << options_.disable_auto_compactions
+		   << (args_.bulk_load ? "; CompactRange after the insertions, or after every interleaved batch)" : ")")
 		   << "\nKey encoding " << sizeof(KeyType) << "-byte big-endian, value 1 byte\n";
 		return ss.str();
 	}
@@ -236,6 +264,7 @@ void insertions_then_queries(const Args& args) {
 
 	Log log(filename);
 
+	memory_baseline(args.w); // keys generated, structure not yet created
 	RocksDbStore store(args);
 	const ProcIOStats os_before = ProcIOStats::read_current();
 	const auto t_start = Clock::now();
@@ -320,12 +349,12 @@ void insertions_then_queries(const Args& args) {
 	std::cout << "Output file [" << filename << "]\n";
 }
 
-// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: uniform keys, and query keys
-// picked with rand() exactly as boa does (same glibc sequence, never reseeded).
+// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: keys from --key-dist, and
+// query keys picked with rand() exactly as boa does (same glibc sequence, never reseeded).
 void insertions_with_queries(const Args& args) {
 	const int size = args.w.size;
 	std::vector<KeyType> data;
-	uniform_random_data(data, size);
+	generate_data(args.w.key_dist, data, size);
 
 	const std::string tmp_filename = "rocksdb_interleaved_"
 		+ std::to_string(args.write_buffer_size) + "_" + std::to_string(args.block_size)
@@ -335,12 +364,14 @@ void insertions_with_queries(const Args& args) {
 
 	Log log(filename);
 
+	memory_baseline(args.w); // keys generated, structure not yet created
 	RocksDbStore store(args);
 	const ProcIOStats os_before = ProcIOStats::read_current();
 	const auto t_start = Clock::now();
 
 	log << "Interleaved Start RocksDB"
 	    << "\nElements: " << data.size()
+	    << "\nKey distribution " << to_string(args.w.key_dist)
 	    << "\nInsertions per batch: " << args.w.insertions_per_batch
 	    << "\nQueries per batch: " << args.w.queries_per_batch
 	    << "\nKeys checksum " << checksum(data)
@@ -360,6 +391,7 @@ void insertions_with_queries(const Args& args) {
 			++n_inserted;
 		}
 		total_processed = insert_end;
+		if (args.bulk_load) store.compact(); // consolidation, counted as insertion time (as BOA's)
 		const ProcIOStats insert_io = ProcIOStats::read_current() - io_batch;
 		const Ms insert_elapsed = Clock::now() - t_start_batch;
 

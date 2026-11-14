@@ -46,7 +46,7 @@ values in `examples/containers/map1.cpp` and `unordered_map1.cpp`:
 | `STXXL_MAP_NODE_BLOCK_SIZE` | 32768 | `stxxl::map` node block size in bytes |
 | `STXXL_MAP_LEAF_BLOCK_SIZE` | 32768 | `stxxl::map` leaf block size in bytes |
 | `STXXL_UM_SUB_BLOCK_SIZE` | 8192 | `stxxl::unordered_map` sub-block size in bytes |
-| `STXXL_UM_SUB_BLOCKS_PER_BLOCK` | 256 | `stxxl::unordered_map` sub-blocks per block |
+| `STXXL_UM_SUB_BLOCKS_PER_BLOCK` | 256 | `stxxl::unordered_map` sub-blocks per block (`build_all.sh` uses 1 with sub-block = `BLOCK`, so the block it caches and reads is one I/O block) |
 
 **Run time** (defaults again from `map1.cpp` / `unordered_map1.cpp`):
 
@@ -56,6 +56,9 @@ values in `examples/containers/map1.cpp` and `unordered_map1.cpp`:
 | `--leaf-cache B` | map | leaf cache in bytes | 33554432 (1024 leaf blocks) |
 | `--initial-buckets N` | unordered_map | initial number of buckets | 10000 |
 | `--buffer-size B` | unordered_map | internal-memory buffer in bytes | 1073741824 (1 GiB) |
+| `--block-cache-blocks N` | unordered_map | `stxxl::hash_map::tuning::blockcache_size`: blocks in the block cache | STXXL's: 12 per disk |
+| `--prefetch-page-size N` | unordered_map | `tuning::prefetch_page_size`: blocks per prefetch page | STXXL's: 2 per disk |
+| `--prefetch-pages N` | unordered_map | `tuning::prefetch_pages` | STXXL's: 2 |
 
 Fixed by the driver:
 

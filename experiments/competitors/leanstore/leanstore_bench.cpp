@@ -156,9 +156,7 @@ void final_report(Log& log, LeanStoreStore& store, const ProcIOStats& os_before,
 /*********************************** benchmarks ***********************************/
 
 // Mirrors insertions_then_queries_benchmark in examples/containers/boa.cpp.
-void insertions_then_queries(const Args& args, LeanStoreStore& store) {
-	std::vector<KeyType> data;
-	generate_data(args.w.key_dist, data, args.w.size);
+void insertions_then_queries(const Args& args, LeanStoreStore& store, const std::vector<KeyType>& data) {
 
 	const std::string query_dists_name = args.w.query_dists_name();
 
@@ -242,12 +240,10 @@ void insertions_then_queries(const Args& args, LeanStoreStore& store) {
 	std::cout << "Output file [" << filename << "]\n";
 }
 
-// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: uniform keys, and query keys
-// picked with rand() exactly as boa does (same glibc sequence, never reseeded).
-void insertions_with_queries(const Args& args, LeanStoreStore& store) {
+// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: keys from --key-dist, and
+// query keys picked with rand() exactly as boa does (same glibc sequence, never reseeded).
+void insertions_with_queries(const Args& args, LeanStoreStore& store, const std::vector<KeyType>& data) {
 	const int size = args.w.size;
-	std::vector<KeyType> data;
-	uniform_random_data(data, size);
 
 	const std::string tmp_filename = "leanstore_interleaved_"
 		+ store_name_params()
@@ -261,6 +257,7 @@ void insertions_with_queries(const Args& args, LeanStoreStore& store) {
 
 	log << "Interleaved Start LeanStore"
 	    << "\nElements: " << data.size()
+	    << "\nKey distribution " << to_string(args.w.key_dist)
 	    << "\nInsertions per batch: " << args.w.insertions_per_batch
 	    << "\nQueries per batch: " << args.w.queries_per_batch
 	    << "\nKeys checksum " << checksum(data)
@@ -317,6 +314,10 @@ void insertions_with_queries(const Args& args, LeanStoreStore& store) {
 
 
 void run_experiment(const Args& args) {
+	// Keys first, then the memory baseline, then LeanStore (see memory_baseline in common.h).
+	std::vector<KeyType> data;
+	generate_data(args.w.key_dist, data, args.w.size);
+	memory_baseline(args.w);
 	std::filesystem::remove(FLAGS_ssd_path);
 	{
 		leanstore::LeanStore db; // opens FLAGS_ssd_path with O_DIRECT, starts FLAGS_worker_threads workers
@@ -326,9 +327,9 @@ void run_experiment(const Args& args) {
 		// The whole benchmark runs as one job on worker thread 0 (transactions must run on a worker).
 		crm.scheduleJobSync(0, [&]() {
 			if (args.w.interleaved)
-				insertions_with_queries(args, *store);
+				insertions_with_queries(args, *store, data);
 			else
-				insertions_then_queries(args, *store);
+				insertions_then_queries(args, *store, data);
 		});
 	}
 	if (!args.keep_db) std::filesystem::remove(FLAGS_ssd_path);

@@ -121,6 +121,7 @@ void run(const Args& args) {
 	for (KeyType k : data)
 		if (key_hash(k) == 0) fail("Key " + std::to_string(k) + " hashes to 0, which PaCHash reserves for metadata");
 
+	memory_baseline(w); // keys generated, structure not yet created
 	std::filesystem::remove(args.store_file);
 	const int open_flags = args.cached_io ? 0 : O_DIRECT;
 	Store store(1.0f, args.store_file.c_str(), open_flags);

@@ -64,6 +64,10 @@ struct Args {
 	// Defaults as in examples/containers/unordered_map1.cpp.
 	size_t initial_buckets = 10000;
 	size_t buffer_size = size_t(1024) * 1024 * 1024;
+	// stxxl::hash_map::tuning (0: keep STXXL's default, which depends on the number of disks)
+	size_t block_cache_blocks = 0;   // blocks in the block cache (default 12 per disk)
+	size_t prefetch_page_size = 0;   // blocks per prefetch page of the buffered reader (default 2 per disk)
+	size_t prefetch_pages = 0;       // prefetch pages of the buffered reader (default 2)
 #endif
 };
 
@@ -79,6 +83,9 @@ void print_usage(const char* prog) {
 #else
 		<< "\n  --initial-buckets N       initial number of buckets (default " << d.initial_buckets << ")"
 		<< "\n  --buffer-size B           internal-memory buffer in bytes (default " << d.buffer_size << ")"
+		<< "\n  --block-cache-blocks N    stxxl::hash_map::tuning::blockcache_size, blocks (default: STXXL's, 12 per disk)"
+		<< "\n  --prefetch-page-size N    tuning::prefetch_page_size, blocks per prefetch page (default: STXXL's, 2 per disk)"
+		<< "\n  --prefetch-pages N        tuning::prefetch_pages (default: STXXL's, 2)"
 		<< "\n  Block sizes (compile time): sub-block " << STXXL_UM_SUB_BLOCK_SIZE << " bytes, "
 		<< STXXL_UM_SUB_BLOCKS_PER_BLOCK << " sub-blocks per block"
 #endif
@@ -98,6 +105,9 @@ Args parse_args(int argc, char* argv[]) {
 #else
 		else if (opt == "--initial-buckets") args.initial_buckets = bytes();
 		else if (opt == "--buffer-size") args.buffer_size = bytes();
+		else if (opt == "--block-cache-blocks") args.block_cache_blocks = bytes();
+		else if (opt == "--prefetch-page-size") args.prefetch_page_size = bytes();
+		else if (opt == "--prefetch-pages") args.prefetch_pages = bytes();
 #endif
 		else { print_usage(argv[0]); fail("Unknown option: " + opt); }
 	}
@@ -117,6 +127,16 @@ std::string store_name_params(const Args& args) {
 
 /*********************************** store ***********************************/
 
+#ifndef STXXL_COMPETITOR_MAP
+// Must run before the unordered_map is created (it reads the tuning in its constructor).
+inline void apply_tuning(const Args& args) {
+	auto* t = stxxl::hash_map::tuning::get_instance();
+	if (args.block_cache_blocks) t->blockcache_size = args.block_cache_blocks;
+	if (args.prefetch_page_size) t->prefetch_page_size = args.prefetch_page_size;
+	if (args.prefetch_pages) t->prefetch_pages = args.prefetch_pages;
+}
+#endif
+
 class StxxlStore {
 public:
 	explicit StxxlStore(const Args& args)
@@ -124,7 +144,7 @@ public:
 #ifdef STXXL_COMPETITOR_MAP
 		  s_(std::make_unique<structure_type>(args.node_cache, args.leaf_cache))
 #else
-		  s_(std::make_unique<structure_type>(args.initial_buckets, HashFunctor(), CompareLess(), args.buffer_size))
+		  s_((apply_tuning(args), std::make_unique<structure_type>(args.initial_buckets, HashFunctor(), CompareLess(), args.buffer_size)))
 #endif
 	{ }
 
@@ -150,7 +170,10 @@ public:
 		ss << "STXXL unordered_map sub-block size " << STXXL_UM_SUB_BLOCK_SIZE
 		   << "\nSTXXL unordered_map sub-blocks per block " << STXXL_UM_SUB_BLOCKS_PER_BLOCK
 		   << "\nSTXXL unordered_map initial buckets " << args_.initial_buckets
-		   << "\nSTXXL unordered_map buffer size " << args_.buffer_size << "\n";
+		   << "\nSTXXL unordered_map buffer size " << args_.buffer_size
+		   << "\nSTXXL unordered_map block cache blocks " << stxxl::hash_map::tuning::get_instance()->blockcache_size
+		   << "\nSTXXL unordered_map prefetch page size " << stxxl::hash_map::tuning::get_instance()->prefetch_page_size
+		   << "\nSTXXL unordered_map prefetch pages " << stxxl::hash_map::tuning::get_instance()->prefetch_pages << "\n";
 #endif
 		ss << "Key encoding uint32_t key, char value 'a'\n";
 		return ss.str();
@@ -184,9 +207,7 @@ void final_report(Log& log, StxxlStore& store, const ProcIOStats& os_before, Clo
 /*********************************** benchmarks ***********************************/
 
 // Mirrors insertions_then_queries_benchmark in examples/containers/boa.cpp.
-void insertions_then_queries(const Args& args, StxxlStore& store) {
-	std::vector<KeyType> data;
-	generate_data(args.w.key_dist, data, args.w.size);
+void insertions_then_queries(const Args& args, StxxlStore& store, const std::vector<KeyType>& data) {
 
 	const std::string query_dists_name = args.w.query_dists_name();
 
@@ -270,12 +291,10 @@ void insertions_then_queries(const Args& args, StxxlStore& store) {
 	std::cout << "Output file [" << filename << "]\n";
 }
 
-// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: uniform keys, and query keys
-// picked with rand() exactly as boa does (same glibc sequence, never reseeded).
-void insertions_with_queries(const Args& args, StxxlStore& store) {
+// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: keys from --key-dist, and
+// query keys picked with rand() exactly as boa does (same glibc sequence, never reseeded).
+void insertions_with_queries(const Args& args, StxxlStore& store, const std::vector<KeyType>& data) {
 	const int size = args.w.size;
-	std::vector<KeyType> data;
-	uniform_random_data(data, size);
 
 	const std::string tmp_filename = STRUCTURE_FILE "_interleaved_"
 		+ store_name_params(args)
@@ -289,6 +308,7 @@ void insertions_with_queries(const Args& args, StxxlStore& store) {
 
 	log << "Interleaved Start " STRUCTURE_HEADER
 	    << "\nElements: " << data.size()
+	    << "\nKey distribution " << to_string(args.w.key_dist)
 	    << "\nInsertions per batch: " << args.w.insertions_per_batch
 	    << "\nQueries per batch: " << args.w.queries_per_batch
 	    << "\nKeys checksum " << checksum(data)
@@ -347,11 +367,15 @@ void insertions_with_queries(const Args& args, StxxlStore& store) {
 int main(int argc, char* argv[]) {
 	const Args args = parse_args(argc, argv);
 	for (int i = 0; i < args.w.experiments_no; ++i) {
+		// Keys first, then the memory baseline, then the structure (see memory_baseline in common.h).
+		std::vector<KeyType> data;
+		generate_data(args.w.key_dist, data, args.w.size);
+		memory_baseline(args.w);
 		StxxlStore store(args); // fresh structure per experiment
 		if (args.w.interleaved)
-			insertions_with_queries(args, store);
+			insertions_with_queries(args, store, data);
 		else
-			insertions_then_queries(args, store);
+			insertions_then_queries(args, store, data);
 	}
 	return 0;
 }

@@ -44,7 +44,7 @@ Settings come in two kinds:
 | `--insertions-per-batch N` | 50000                                  | With `--interleaved`: insertions per batch |
 | `--queries-per-batch N` | 2000                                   | With `--interleaved`: queries per batch (capped by the number of keys inserted so far) |
 | `--suspended` | off                                    | Online-suspended mode (see [Online-suspended mode](#online-suspended-mode)) |
-| `--materialization NAME` | `merge`                                | Suspended-mode materialization strategy: `merge`, `sort`, `hybrid`. Implies `--suspended`. |
+| `--materialization NAME` | `hybrid`                               | Suspended-mode materialization strategy: `merge`, `sort`, `hybrid`. Implies `--suspended`. |
 | `--help` |                                        | Print the options and their defaults |
 
 Invalid values (non-positive numbers, unknown distribution names, unknown options) print an error and
@@ -112,9 +112,9 @@ pointer directory entries, like online insertion).
 
 | `--materialization` | How consolidation builds runs |
 |---|---|
-| `merge` (default) | Each buffer is sorted when flushed to the staging log; consolidation k-way merges those sorted chunks into the final runs. |
+| `merge` | Each buffer is sorted when flushed to the staging log; consolidation k-way merges those sorted chunks into the final runs. |
 | `sort` | Buffers are appended unsorted; the whole log is sorted once at consolidation (`stxxl::sort`), then copied into the final runs. Displaced old runs are re-sorted together with the log. |
-| `hybrid` | As `sort`, but displaced old runs are merged into the promoted run instead of re-sorted. |
+| `hybrid` (default) | As `sort`, but displaced old runs are merged into the promoted run instead of re-sorted. |
 
 What the benchmark does in this mode:
 
@@ -127,7 +127,7 @@ What the benchmark does in this mode:
 
 The strategy is the global `stxxl::materialization` (`boa_params.h`), which the benchmark sets from the
 command line. The old macros still work as defaults: `ONLINE_SUSPENDED_MODE` turns `--suspended` on,
-`SORT_BASED_MATERIALIZATION` / `HYBRID_MATERIALIZATION` set the default strategy.
+`MERGE_BASED_MATERIALIZATION` / `SORT_BASED_MATERIALIZATION` change the default strategy (hybrid).
 
 ---
 

@@ -222,9 +222,7 @@ void final_report(Log& log, SiltStore& store, const ProcIOStats& os_before, Cloc
 /*********************************** benchmarks ***********************************/
 
 // Mirrors insertions_then_queries_benchmark in examples/containers/boa.cpp.
-void insertions_then_queries(const Args& args, SiltStore& store) {
-	std::vector<KeyType> data;
-	generate_data(args.w.key_dist, data, args.w.size);
+void insertions_then_queries(const Args& args, SiltStore& store, const std::vector<KeyType>& data) {
 
 	const std::string query_dists_name = args.w.query_dists_name();
 
@@ -309,12 +307,10 @@ void insertions_then_queries(const Args& args, SiltStore& store) {
 	std::cout << "Output file [" << filename << "]\n";
 }
 
-// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: uniform keys, and query keys
-// picked with rand() exactly as boa does (same glibc sequence, never reseeded).
-void insertions_with_queries(const Args& args, SiltStore& store) {
+// Mirrors insertions_with_queries_benchmark in examples/containers/boa.cpp: keys from --key-dist, and
+// query keys picked with rand() exactly as boa does (same glibc sequence, never reseeded).
+void insertions_with_queries(const Args& args, SiltStore& store, const std::vector<KeyType>& data) {
 	const int size = args.w.size;
-	std::vector<KeyType> data;
-	uniform_random_data(data, size);
 
 	const std::string tmp_filename = "silt_interleaved_"
 		+ store_name_params(args)
@@ -328,6 +324,7 @@ void insertions_with_queries(const Args& args, SiltStore& store) {
 
 	log << "Interleaved Start SILT"
 	    << "\nElements: " << data.size()
+	    << "\nKey distribution " << to_string(args.w.key_dist)
 	    << "\nInsertions per batch: " << args.w.insertions_per_batch
 	    << "\nQueries per batch: " << args.w.queries_per_batch
 	    << "\nKeys checksum " << checksum(data)
@@ -386,11 +383,15 @@ void insertions_with_queries(const Args& args, SiltStore& store) {
 int main(int argc, char* argv[]) {
 	const Args args = parse_args(argc, argv);
 	for (int i = 0; i < args.w.experiments_no; ++i) {
+		// Keys first, then the memory baseline, then the structure (see memory_baseline in common.h).
+		std::vector<KeyType> data;
+		generate_data(args.w.key_dist, data, args.w.size);
+		memory_baseline(args.w);
 		SiltStore store(args); // fresh store per experiment
 		if (args.w.interleaved)
-			insertions_with_queries(args, store);
+			insertions_with_queries(args, store, data);
 		else
-			insertions_then_queries(args, store);
+			insertions_then_queries(args, store, data);
 	}
 	return 0;
 }

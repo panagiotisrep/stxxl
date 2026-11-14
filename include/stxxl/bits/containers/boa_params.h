@@ -17,16 +17,16 @@ double routing_filter_mult = 1;
 //   merge:  each buffer is sorted when flushed to the log; consolidation k-way merges those chunks.
 //   sort:   buffers are appended unsorted; the whole log is sorted once at consolidation.
 //   hybrid: as sort, but displaced old runs are merged instead of re-sorted.
-// Set before calling lazy_insert. Defaults to the SORT_BASED_MATERIALIZATION / HYBRID_MATERIALIZATION
-// macros if defined.
+// Set before calling lazy_insert. Default: hybrid; the MERGE_BASED_MATERIALIZATION /
+// SORT_BASED_MATERIALIZATION macros select another default at compile time.
 enum class materialization_strategy { merge, sort, hybrid };
 
-#if defined(SORT_BASED_MATERIALIZATION)
-materialization_strategy materialization = materialization_strategy::sort;
-#elif defined(HYBRID_MATERIALIZATION)
-materialization_strategy materialization = materialization_strategy::hybrid;
-#else
+#if defined(MERGE_BASED_MATERIALIZATION)
 materialization_strategy materialization = materialization_strategy::merge;
+#elif defined(SORT_BASED_MATERIALIZATION)
+materialization_strategy materialization = materialization_strategy::sort;
+#else // default (HYBRID_MATERIALIZATION is accepted and means the same)
+materialization_strategy materialization = materialization_strategy::hybrid;
 #endif
 
 STXXL_END_NAMESPACE
