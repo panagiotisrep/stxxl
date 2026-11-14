@@ -1263,6 +1263,14 @@ STXXL_BEGIN_NAMESPACE
           }
         }
 
+        // A tier can have fewer than RunsPerTier run slots (runs are appended one at a time), and then it
+        // still has room (as in empty_run_in_tier): append a slot instead of reporting the tier full.
+        if (m_tiers[tier].m_runs.size() < RunsPerTier) {
+          run r;
+          m_tiers[tier].m_runs.push_back(std::move(r));
+          return static_cast<int>(m_tiers[tier].m_runs.size()) - 1;
+        }
+
         return -1;
       }
 

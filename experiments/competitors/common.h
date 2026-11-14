@@ -5,6 +5,10 @@
 #include <stxxl/bits/utils/workloads.h>
 
 #include <sys/resource.h>
+#include <unistd.h>
+
+#include <csignal>
+#include <cstdio>
 
 #include <chrono>
 #include <cstdint>
@@ -104,6 +108,7 @@ struct WorkloadArgs {
 	bool interleaved = false;
 	int insertions_per_batch = 50000;
 	int queries_per_batch = 2000;
+	std::string baseline_file; // --baseline-file: see memory_baseline()
 
 	std::string query_dists_name() const {
 		std::string name;
@@ -127,7 +132,10 @@ inline void print_workload_usage(bool with_interleaved) {
 		<< to_string(d.query_dists.front()) << "):";
 	for (QueryDistribution q : all_query_distributions) std::cout << " " << to_string(q);
 	std::cout << "\n  --log-file PATH           results file (default: generated; appended to if it exists)"
-		<< "\n  --no-io-details           omit per-checkpoint I/O details\n";
+		<< "\n  --no-io-details           omit per-checkpoint I/O details"
+		<< "\n  --baseline-file PATH      after generating the keys and before creating the structure, write"
+		<< "\n                            \"<pid> <RSS bytes>\" to PATH and stop (SIGSTOP) until SIGCONT, so that"
+		<< "\n                            experiments/run_all.sh can set the memory limit to baseline + M\n";
 	if (with_interleaved)
 		std::cout << "  --interleaved             batches of insertions followed by queries\n"
 			<< "  --insertions-per-batch N  with --interleaved (default " << d.insertions_per_batch << ")\n"
@@ -165,6 +173,7 @@ inline bool parse_workload_option(int argc, char* argv[], int& i, WorkloadArgs& 
 	if (opt == "--interleaved") w.interleaved = true;
 	else if (opt == "--no-io-details") w.io_details = false;
 	else if (opt == "--log-file") w.log_filename = option_value(argc, argv, i);
+	else if (opt == "--baseline-file") w.baseline_file = option_value(argc, argv, i);
 	else if (opt == "--key-dist") {
 		const std::string v = option_value(argc, argv, i);
 		if (!from_string(v, w.key_dist)) fail("Invalid value for " + opt + ": " + v);
@@ -219,6 +228,35 @@ inline uint64_t peak_rss_bytes() {
 	return static_cast<uint64_t>(ru.ru_maxrss) * 1024; // Linux: KiB
 }
 
+// Current resident set size (VmRSS), bytes.
+inline uint64_t current_rss_bytes() {
+	std::ifstream status("/proc/self/status");
+	std::string line;
+	while (std::getline(status, line))
+		if (line.rfind("VmRSS:", 0) == 0) return std::strtoull(line.c_str() + 6, nullptr, 10) * 1024;
+	return 0;
+}
+
+// Memory baseline: RSS once the benchmark's own data (the keys) exists and before the structure is
+// created. Everything above it is the structure (plus the library's fixed overhead); the key set itself is
+// harness memory, the same in every driver and in boa. Logged as "Baseline RSS bytes" by report_totals().
+// With --baseline-file the process writes "<pid> <baseline>" to that file and stops itself; run_all.sh
+// then sets the cgroup memory limit to baseline + M + overhead and continues it (SIGCONT). Only the first
+// call stops (--repeat).
+inline uint64_t g_baseline_rss = 0;
+inline void memory_baseline(const WorkloadArgs& w) {
+	g_baseline_rss = current_rss_bytes();
+	static bool stopped = false;
+	if (w.baseline_file.empty() || stopped) return;
+	stopped = true;
+	{
+		std::ofstream f(w.baseline_file + ".tmp");
+		f << getpid() << " " << g_baseline_rss << "\n";
+	}
+	std::rename((w.baseline_file + ".tmp").c_str(), w.baseline_file.c_str()); // appears complete
+	std::raise(SIGSTOP);
+}
+
 inline std::string io_details(const ProcIOStats& d) {
 	std::ostringstream ss;
 	ss << "OS bytes read " << d.read_bytes << ", "
@@ -251,5 +289,7 @@ inline void report_totals(Log& log, const ProcIOStats& os_before, Clock::time_po
 	    << "OS write_bytes: " << d.write_bytes << "\n"
 	    << "OS read syscalls:  " << d.syscr << "\n"
 	    << "OS write syscalls: " << d.syscw << "\n"
-	    << "Peak RSS bytes: " << peak_rss_bytes() << "\n";
+	    << "Peak RSS bytes: " << peak_rss_bytes() << "\n"
+	    << "Baseline RSS bytes: " << g_baseline_rss << " (keys generated, structure not yet created)\n"
+	    << "Peak RSS above baseline bytes: " << (peak_rss_bytes() > g_baseline_rss ? peak_rss_bytes() - g_baseline_rss : 0) << "\n";
 }
