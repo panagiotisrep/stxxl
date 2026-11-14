@@ -43,7 +43,9 @@ STXXL_BEGIN_NAMESPACE
       unsigned int prefix_bits_length_;
       std::unique_ptr<routing_external_vector> m_filter;
 
-      explicit routing_filter(const unsigned int entries)
+      // entries is 64-bit: tier 4 with buffer 4096 and lambda 16 already needs 2^32 entries (an unsigned int
+      // wrapped to 0, giving a 0-bit prefix, i.e. one directory entry for the whole tier).
+      explicit routing_filter(const uint64_t entries)
       {
         prefix_bits_length_ = std::ceil(std::log2(entries));
         m_filter = std::unique_ptr<routing_external_vector>(
@@ -642,7 +644,7 @@ STXXL_BEGIN_NAMESPACE
         auto run_size = m_in_memory_table_max_size * pow(RunsPerTier, tier_level + 1) * routing_filter_mult;
         // auto hl = std::log2(run_size) / std::log2(RunsPerTier);
         // auto l_hl = p
-        return new routing_filter<HashType, Pages, PageSize, BlockSize>(run_size);
+        return new routing_filter<HashType, Pages, PageSize, BlockSize>(static_cast<uint64_t>(std::max(1.0, double(run_size))));
         // std::pow(RunsPerTier, ));
         // std::ceil(std::log2(RunsPerTier)),
         // run_size * pow(RunsPerTier, tier_level) + tier_level
