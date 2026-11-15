@@ -86,13 +86,23 @@ exit with code 1.
 
 ### What the results file contains
 
-Per checkpoint: time and STXXL I/O since the phase started (reads, writes, bytes, read/write wait time in ms). Per query distribution:
+Per checkpoint: time and STXXL I/O since the phase started (reads, writes, bytes, read/write wait time in ms), plus the current structure size: `boa size` (data + runs + buffer) and `index bytes <total> (runs <B>, directories <B>)`, the index alone, as in the final `Index bytes` line. Per query distribution:
 
 ```
 Search stats <dist>: Searches [..], Visited runs [..], Visited total elements [..], Directory reads [..]
 ```
 
-(`Directory reads` is pv only). At the end, pv runs also log:
+(`Directory reads` is pv only). At the end, every run logs the index size (runs + directories, without
+the key-value data vector):
+
+```
+Index bytes: runs <B>, directories <B>, total <B>, per element <B>
+```
+
+`runs` is the allocated size of all run vectors (bin padding included; merged runs count 0 unless
+`BOA_KEEP_MERGED_RUNS`), `directories` the full size of every tier directory, `per element` = total / `--size`.
+
+pv runs also log:
 
 | Line | Meaning |
 |---|---|
@@ -143,6 +153,17 @@ command line. The old macros still work as defaults: `ONLINE_SUSPENDED_MODE` tur
 | `BOA_LAMBDA` | 16 | λ, runs per tier (pv: at most 127) |
 
 These use `#ifndef`, so `-DBOA_LAMBDA=8` overrides them without editing the file.
+
+### `BOA_KEEP_MERGED_RUNS` (online mode)
+
+By default, when a tier is merged into the next one, its runs are cleared (`m_run.clear()` in
+`compact_tiers()`, `boa.h` and `boa_pv.h`) and their blocks go back to the STXXL block manager. Defining
+`BOA_KEEP_MERGED_RUNS` restores the old behaviour: merged runs keep their blocks, and the next run written
+to the same slot reuses them (`stxxl::vector::resize` never shrinks capacity). Then the space of every
+tier that has ever been full stays allocated, up to about 2× the run space right after a new tier
+appears. Clearing costs no I/O, only block-manager bookkeeping. At 50M (boa, 32 KiB blocks, one run
+each), insertion took 187 s with clearing and 205 s without, with the same query time.
+Online-suspended mode is not affected by this macro (its `resize(0)` calls also keep the blocks).
 
 ### `IN_MEMORY_SORT` (compile-time, untested)
 

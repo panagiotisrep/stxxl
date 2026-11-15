@@ -249,6 +249,16 @@ constexpr bool is_boa_pv() {
 	return std::is_same<Boa, boa_pv_type>::value;
 }
 
+// Index size = runs (hashes + pointers, incl. bin padding) + directories, as allocated in external
+// memory after the last insertion. The key-value data vector is not part of the index.
+template <typename Boa>
+void print_index_size(Boa const& boa, uint64_t elements, std::ostream& os) {
+	const size_t runs = boa.get_runs_size_bytes();
+	const size_t dirs = boa.get_directory_size_bytes();
+	os << "Index bytes: runs " << runs << ", directories " << dirs << ", total " << runs + dirs
+	   << ", per element " << (elements ? double(runs + dirs) / double(elements) : 0.0) << "\n";
+}
+
 template <typename Boa>
 void insertions_then_queries_benchmark(const int pages, const int page_size, const int block_size, const int lambda,
                                        const int size, const int buffer_size, const int queries_no,
@@ -361,6 +371,8 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 						<< "read wait time " << std::get<6>(details) << " ms, "
 						<< "write wait time " << std::get<7>(details) << " ms, "
 						<< "boa size " << boa.get_size_bytes() << ", "
+						<< "index bytes " << boa.get_runs_size_bytes() + boa.get_directory_size_bytes()
+						<< " (runs " << boa.get_runs_size_bytes() << ", directories " << boa.get_directory_size_bytes() << "), "
 						<< "merges " << boa.get_merges_occurred() << "\n";
 			}
 			boa.reset_merges_occurred();
@@ -487,6 +499,8 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	out << "OS write syscalls: " << os_delta.syscw << "\n";
 	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
 	out << "Tiers no: " << boa.get_tiers_no() << "\n";
+	print_index_size(boa, size, std::cout);
+	print_index_size(boa, size, out);
 
 	if constexpr (is_boa_pv<Boa>()) {
 		std::cout << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";
@@ -708,6 +722,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 					<< "read wait time " << std::get<6>(batch_query_details) << " ms, "
 					<< "write wait time " << std::get<7>(batch_query_details) << " ms], "
 					<< "boa size " << boa.get_size_bytes() << ", "
+					<< "index bytes " << boa.get_runs_size_bytes() + boa.get_directory_size_bytes()
+					<< " (runs " << boa.get_runs_size_bytes() << ", directories " << boa.get_directory_size_bytes() << "), "
 					<< "merges " << boa.get_merges_occurred() << "\n";
 
 #ifndef BOA_OPT
@@ -744,6 +760,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	out << "OS write syscalls: " << os_delta.syscw << "\n";
 	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
 	out << "Tiers no: " << boa.get_tiers_no() << "\n";
+	print_index_size(boa, size, std::cout);
+	print_index_size(boa, size, out);
 
 	if constexpr (is_boa_pv<Boa>()) {
 		std::cout << "Directory bytes: " << boa.get_directory_size_bytes() << "\n";

@@ -236,6 +236,29 @@ STXXL_BEGIN_NAMESPACE
         return size;
       }
 
+      //! Index size: run vectors (hashes + pointers, incl. bin padding) as allocated on disk.
+      //! Merged-away runs are cleared, so only live runs count.
+      size_t get_runs_size_bytes() const
+      {
+        size_t size = 0;
+        for (auto const& tier : m_tiers)
+          for (auto const& run : tier.m_runs)
+            size += run.m_run.size() * sizeof(run_element);
+        return size;
+      }
+
+      //! Index size: all tier directories (full size from the tier's first merge).
+      size_t get_directory_size_bytes() const
+      {
+        size_t size = 0;
+        for (auto const& tier : m_tiers)
+        {
+          if (tier.m_routing_filter)
+            size += tier.m_routing_filter->get_size_bytes();
+        }
+        return size;
+      }
+
     private:
       //! In-memory cache
       typedef std::pair<HashType, element_type> cache_element;
@@ -863,6 +886,11 @@ STXXL_BEGIN_NAMESPACE
             for (auto& run : m_tiers[tier_no].m_runs)
             {
               run.active = false;
+#ifndef BOA_KEEP_MERGED_RUNS
+              // Return the merged run's blocks to the block manager. Without this the run keeps its
+              // blocks for reuse by the next run in this slot (stxxl::vector::resize never shrinks).
+              run.m_run.clear();
+#endif
             }
             m_tiers[tier_no].m_routing_filter->reset();
             m_stats.tier_to_collisions[tier_no] = 0;
