@@ -29,6 +29,9 @@
 # the same value). BOA_BLOCK_SIZE, BOA_LAMBDA, BOA_PAGES need a rebuild, see boa.md.
 boa                  boa   --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 boa_pv               boa   --boa-pv --routing-filter-mult 1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# Same with routing filter multiplier 0.05 (alpha = 20): a larger routing filter.
+boa_a20              boa   --routing-filter-mult 0.05 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+boa_pv_a20           boa   --boa-pv --routing-filter-mult 0.05 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 boa_suspended        boa   --suspended --materialization hybrid --routing-filter-mult 1
 boa_pv_suspended     boa   --boa-pv --suspended --materialization hybrid --routing-filter-mult 1
 # Online-suspended and interleaved: consolidate_structure() after every batch (compare with rocksdb_bulk_il).
@@ -44,7 +47,7 @@ leveldb              leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? 
 # log record and one memtable insertion step per 1000 keys; the rest of every interleaved batch is
 # written before its queries. Compaction still runs automatically (LevelDB cannot postpone it).
 # 1000 keys keep the memtable overshoot small (it may exceed write_buffer_size by one WriteBatch).
-leveldb_batch        leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --write-batch 1000 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# leveldb_batch        leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --write-batch 1000 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 #   leveldb_batch       interleaved (compare with boa, rocksdb)
 #   leveldb_batch_then  insert-then-query, all query distributions (compare with boa_suspended, rocksdb_bulk)
 leveldb_batch_then   leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --write-batch 1000
@@ -57,6 +60,9 @@ leveldb_batch_then   leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? 
 # Without --bloom-bits: no filter (with 10 bits/key the filters do not fit in M/2 at 2M keys).
 rocksdb              rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 rocksdb_bloom        rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --bloom-bits 10 --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# Bloom filter with a 256 MiB block cache instead of M/2: at 100M keys the filter alone is about 125 MB (10 bits/key), so with
+# the M budget every query re-reads filter and index blocks. Report it as a larger-RAM run.
+rocksdb_bloom_ram    rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size 268435456 --cache-index-and-filter-blocks --bloom-bits 10 --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 1 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 # RocksDB bulk load (--bulk-load), its counterpart of BOA's online-suspended mode: automatic compaction
 # off, insertions only fill memtables and L0 files, one full compaction (CompactRange) consolidates.
 #   rocksdb_bulk     insert-then-query, one compaction after all insertions (compare with boa_suspended)
@@ -70,9 +76,13 @@ rocksdb_bulk_il      rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-s
 # default 10 MiB) to one block, page-provider write buffer from 1024 to 32 pages, 2 instead of 64
 # buffer partitions; this took LeanStore from 44 MB to 19 MB above the key set (the rest is fixed).
 leanstore            leanstore/leanstore_bench   --dram_gib={M_GIB} --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# LeanStore with a buffer pool of 4 GiB instead of M: at 20M keys the equal-budget run timed out (random B-tree inserts with an
+# 8 MB pool need a leaf read and write per insertion); 4 GiB holds the tree for 100M keys. Report it as a larger-RAM run.
+leanstore_ram        leanstore/leanstore_bench   --dram_gib=4 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # STXXL B+-tree: node cache + leaf cache = M. Node/leaf block size is compile time (32 KiB).
-stxxl_map            stxxl/stxxl_map_bench   --node-cache {M/2} --leaf-cache {M/2} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# (skipped for now; remove the leading # to run it) 
+# stxxl_map            stxxl/stxxl_map_bench   --node-cache {M/2} --leaf-cache {M/2} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
 
 # STXXL unordered_map: insertion buffer = M/2, block cache = M/2 (stxxl::hash_map::tuning, in blocks; STXXL's
 # default is 12 blocks), prefetching 1 page of 1 block (default 2 x 2 blocks). Built with 1 sub-block per
@@ -87,3 +97,64 @@ silt_sorted          silt/silt_bench   --mode sorted
 
 # PaCHash (static): defaults, O_DIRECT, posix I/O, queue depth 1; block length is compile time (= BLOCK).
 pachash              pachash/pachash_bench   --a 8 --io posix --queue-depth 1
+
+# Larger-RAM variants for 500M (added after the equal-budget runs were too slow). Report them as larger-RAM runs.
+# STXXL B+-tree with a leaf cache that holds all leaves (500M x 8 B entries, ~5-6 GB) and 512 MiB of node cache, so it can finish.
+stxxl_map_ram        stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 10737418240 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# LeanStore with a 6 GiB buffer pool (the 500M tree is larger than that, so it still does I/O).
+leanstore_6g         leanstore/leanstore_bench   --dram_gib=6 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# Restrained / enlarged variants, started automatically by the 500M follow-up queue (see scratchpad q500b.sh): halve the RAM of a larger-RAM run that
+# was faster than BOA-PV; enlarge LeanStore if 6 GiB timed out.
+stxxl_map_l5g        stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 5368709120 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_map_l2_5g      stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 2684354560 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_map_l1_25g     stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 1342177280 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore_12g        leanstore/leanstore_bench   --dram_gib=12 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore_3g         leanstore/leanstore_bench   --dram_gib=3 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore_1_5g       leanstore/leanstore_bench   --dram_gib=1.5 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# SILT under a cgroup memory limit (experiments/competitors/silt/silt_limited.sh; SILT has no memory setting of its own).
+silt_combi_2g        ../experiments/competitors/silt/silt_limited.sh   --memory-max 2G --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+silt_combi_8g        ../experiments/competitors/silt/silt_limited.sh   --memory-max 8G --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# LevelDB mmaps its tables and uses the OS page cache, so at 500M it ran faster than BOA with ~330 MB above the key set (budget 13 MB).
+# These runs bound the total memory (key set 1.9 GB + page cache) with a cgroup limit: key set + ~300 MB, then + ~150 MB.
+leveldb_lim2300m     ../experiments/competitors/limited.sh   --memory-max 2300M leveldb/leveldb_bench --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leveldb_lim2150m     ../experiments/competitors/limited.sh   --memory-max 2150M leveldb/leveldb_bench --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# Further SILT limits, used if silt_combi_8g is faster than BOA-PV (limits include the 1.9 GB key set).
+silt_combi_5g        ../experiments/competitors/silt/silt_limited.sh   --memory-max 5G --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+silt_combi_3g        ../experiments/competitors/silt/silt_limited.sh   --memory-max 3G --mode combi --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# STXXL B+-tree with a 4 GiB leaf cache: 2.5 GiB timed out (batch 23 never finished, tree no longer fits), 5 GiB fits completely.
+stxxl_map_l4g        stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 4294967296 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# LevelDB with O_DIRECT on its table files (experiments/competitors/leveldb/direct_env.h), like BOA's direct=on and RocksDB's direct reads/writes.
+leveldb_direct       leveldb/leveldb_bench   --write-buffer-size {M/4 > 65536 ? M/4 : 65536} --cache-size {M/2} --block-size {BLOCK} --direct-io --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# STXXL B+-tree with a 3 GiB leaf cache: 4 GiB (3,084 s, faster than BOA-PV) and 2.5 GiB (timeout) bracket the point where the tree stops fitting.
+stxxl_map_l3g        stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 3221225472 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_map_l3_5g      stxxl/stxxl_map_bench   --node-cache 536870912 --leaf-cache 3758096384 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+# ---- New competitors (extern/lmdb, splinterdb, wiredtiger, faster): equal budget M where the system allows it.
+# LMDB: a memory-mapped B+-tree; it has no cache of its own, the OS page cache is its cache, so its memory cannot be set
+# (it will be marked "over M"). 100000 insertions per transaction, a sync at every commit (LMDB's default).
+lmdb                 lmdb/lmdb_bench   --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# WiredTiger: connection cache_size = M, 1 block pages (leaf and internal), O_DIRECT data files, WiredTiger's defaults otherwise
+# (no compression, no log).
+wiredtiger           wiredtiger/wiredtiger_bench   --cache-size {M} --leaf-page-max 4096 --internal-page-max 4096 --direct-io --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# SplinterDB: cache_size = M (SplinterDB opens its file with O_DIRECT), no write-ahead log (its default).
+splinterdb           splinterdb/splinterdb_bench   --cache-size {M} --memtable-capacity 3145728 --disk-size 8589934592 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+# FASTER: the hash index (64 bytes per bucket) is always in memory and the log has a 32 MiB page, so it cannot run at M: this is a
+# larger-RAM reference run (1 Mi buckets = 64 MiB index, 512 MiB in-memory log; the index grows with the number of keys).
+faster_ram           faster/faster_bench   --table-size 1048576 --log-size 536870912 --mutable-fraction 0.5 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+splinterdb_ram           splinterdb/splinterdb_bench   --cache-size 67108864 --disk-size 8589934592 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+wiredtiger_256m           wiredtiger/wiredtiger_bench   --cache-size 268435456 --leaf-page-max 4096 --internal-page-max 4096 --direct-io --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+wiredtiger_1g           wiredtiger/wiredtiger_bench   --cache-size 1073741824 --leaf-page-max 4096 --internal-page-max 4096 --direct-io --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+
+rocksdb_j2           rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --cache-index-and-filter-blocks --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 2 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+rocksdb_j2_idx       rocksdb/rocksdb_bench   --write-buffer-size {M/4} --cache-size {M/2} --block-size {BLOCK} --direct-reads --direct-writes --max-background-jobs 2 --compaction-readahead-size {BLOCK} --writable-file-max-buffer-size {BLOCK} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore_64m        leanstore/leanstore_bench   --dram_gib=0.0625 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+leanstore_256m       leanstore/leanstore_bench   --dram_gib=0.25 --worker_threads=1 --pp_threads=1 --vi=false --isolation_level=ru --wal=false --wal_buffer_size={BLOCK} --write_buffer_size=32 --partition_bits=1 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+stxxl_map_m          stxxl/stxxl_map_bench   --node-cache {M/4} --leaf-cache {M*3/4} --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+faster_idx           faster/faster_bench   --table-size 67108864 --log-size 536870912 --mutable-fraction 0.5 --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}
+lmdb_lim2150m        ../experiments/competitors/limited.sh   --memory-max 2150M lmdb/lmdb_bench --interleaved --insertions-per-batch {BATCH_INSERTS} --queries-per-batch {BATCH_QUERIES}

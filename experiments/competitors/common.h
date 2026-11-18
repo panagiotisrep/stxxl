@@ -274,6 +274,7 @@ struct Log {
 
 	explicit Log(const std::string& filename) : out(filename, std::ios::app) {
 		if (!out) fail("Cannot open results file " + filename);
+		out << std::unitbuf; // every line is on disk at once: progress can be followed while the run is going
 	}
 
 	template <typename T>

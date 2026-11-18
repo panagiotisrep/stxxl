@@ -25,3 +25,19 @@
 [submodule "extern/silt"]
 	path = extern/silt
 	url = https://github.com/ByteHamster/silt
+[submodule "extern/lmdb"]
+	path = extern/lmdb
+	url = https://github.com/LMDB/lmdb
+	shallow = true
+[submodule "extern/splinterdb"]
+	path = extern/splinterdb
+	url = https://github.com/vmware/splinterdb
+	shallow = true
+[submodule "extern/wiredtiger"]
+	path = extern/wiredtiger
+	url = https://github.com/wiredtiger/wiredtiger
+	shallow = true
+[submodule "extern/faster"]
+	path = extern/faster
+	url = https://github.com/microsoft/FASTER
+	shallow = true

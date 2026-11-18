@@ -6,20 +6,23 @@
 #   LeanStore      libtbb-dev libaio-dev
 #   SILT           libxerces-c-dev libssl-dev libgsl-dev libtbb-dev libboost-dev
 #   PaCHash        liburing-dev, only with --with-uring (for PACHASH_WITH_URING=ON)
+#   SplinterDB     libaio-dev libxxhash-dev libconfig-dev
+#   FASTER         libaio-dev uuid-dev libtbb-dev
+#   LMDB, WiredTiger  none
 #
 # Usage: experiments/competitors/install_dependencies.sh [--with-uring] [--dry-run]
 #   --with-uring  also install liburing-dev
 #   --dry-run     only show what apt would install (no root needed)
 set -euo pipefail
 
-PACKAGES=(build-essential cmake git time python3 libtbb-dev libaio-dev libxerces-c-dev libssl-dev libgsl-dev libboost-dev)
+PACKAGES=(build-essential cmake git time python3 libtbb-dev libaio-dev libxerces-c-dev libssl-dev libgsl-dev libboost-dev libxxhash-dev libconfig-dev uuid-dev)
 DRY_RUN=0
 
 for arg in "$@"; do
 	case "$arg" in
 		--with-uring) PACKAGES+=(liburing-dev) ;;
 		--dry-run) DRY_RUN=1 ;;
-		-h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,15p' "$0"; exit 0 ;;
 		*) echo "Unknown option: $arg" >&2; exit 1 ;;
 	esac
 done

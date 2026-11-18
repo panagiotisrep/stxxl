@@ -3,7 +3,7 @@
 # <competitor>/build.sh, into build-competitors/<competitor>/ (stxxl: this repository's STXXL map and unordered_map).
 #
 # Usage: experiments/competitors/build_all.sh
-#   COMPETITORS  which ones (default: "leveldb rocksdb pachash leanstore stxxl silt")
+#   COMPETITORS  which ones (default: "leveldb rocksdb pachash leanstore stxxl silt lmdb splinterdb wiredtiger faster")
 #   JOBS         parallel compile jobs per build (default: all cores; RocksDB needs ~1 GB RAM per job)
 #   BLOCK        I/O block size in bytes for the competitors whose block size is fixed at compile time
 #                (default: 32768 = BOA_BLOCK_SIZE; must equal run_all.sh's BLOCK):
@@ -20,7 +20,7 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
-COMPETITORS="${COMPETITORS:-leveldb rocksdb pachash leanstore stxxl silt}"
+COMPETITORS="${COMPETITORS:-leveldb rocksdb pachash leanstore stxxl silt lmdb splinterdb wiredtiger faster}"
 BLOCK="${BLOCK:-32768}"
 export PACHASH_BLOCK_LENGTH="${PACHASH_BLOCK_LENGTH:-$BLOCK}"
 export STXXL_MAP_NODE_BLOCK_SIZE="${STXXL_MAP_NODE_BLOCK_SIZE:-$BLOCK}"

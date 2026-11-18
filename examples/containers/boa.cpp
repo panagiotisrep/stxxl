@@ -21,6 +21,7 @@
 
 
 #include <iostream>
+#include <thread>
 #include <stxxl/bits/utils/hash.h>
 #include <stxxl/boa>
 #include <stxxl/boa_pv>
@@ -33,6 +34,7 @@
 #include <string>
 #include <stdexcept>
 #include <tuple>
+#include <sys/resource.h>
 #include <bytehamster/util/MurmurHash64.h>
 #include <stxxl/bits/utils/workloads.h>
 
@@ -91,6 +93,33 @@ std::tuple<size_t, size_t, size_t, size_t, size_t, size_t, double, double> get_r
 		delta.get_wait_read_time() * 1000,
 		delta.get_wait_write_time() * 1000
 	};
+}
+
+// non-empty when --buffer-size is set explicitly: keeps the log files of a buffer sweep apart
+static std::string g_log_name_suffix;
+// Memory baseline as in experiments/competitors/common.h: RSS after the keys exist and before the structure is
+// created; "Peak RSS above baseline bytes" is the peak RSS minus it (logged at the end of the interleaved run).
+static uint64_t g_baseline_rss = 0;
+static uint64_t current_rss_bytes() {
+	std::ifstream status("/proc/self/status");
+	std::string line;
+	while (std::getline(status, line))
+		if (line.rfind("VmRSS:", 0) == 0) return std::strtoull(line.c_str() + 6, nullptr, 10) * 1024;
+	return 0;
+}
+static uint64_t peak_rss_bytes() {
+	rusage ru{};
+	getrusage(RUSAGE_SELF, &ru);
+	return static_cast<uint64_t>(ru.ru_maxrss) * 1024;
+}
+static bool g_pregenerate_queries = false; // --pregenerate-queries (interleaved + --query-dist)
+static int g_pause_between_batches = 0;    // --pause-between-batches S (seconds, interleaved)
+
+// "x.txt" -> "x<suffix>.txt"
+static std::string with_log_suffix(const std::string& name) {
+	const std::size_t dot = name.find_last_of('.');
+	if (dot == std::string::npos) return name + g_log_name_suffix;
+	return name.substr(0, dot) + g_log_name_suffix + name.substr(dot);
 }
 
 bool file_exists(const std::string &filename) {
@@ -280,7 +309,7 @@ void insertions_then_queries_benchmark(const int pages, const int page_size, con
 	               + "_" + to_string(key_dist)
 	               + "_" + query_dists_name + ".txt";
 
-	const std::string filename = log_filename.empty() ? get_available_filename(tmp_filename) : log_filename;
+	const std::string filename = log_filename.empty() ? get_available_filename(with_log_suffix(tmp_filename)) : log_filename;
 
 	std::ofstream out(filename, std::ios::app);
 	if (!out)
@@ -536,6 +565,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	/**************************** create data *****************************/
 	std::vector<KeyType> data;
 	generate_data(key_dist, data, size);
+	g_baseline_rss = current_rss_bytes(); // keys generated, structure not yet created
 
 #ifdef BOA_OPT
 	std::string tmp_filename = std::string("boa_interleaved_opt_") + suspended_file_tag();
@@ -552,7 +582,7 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	               + "_" + std::to_string(k_queries_per_batch)
 	               + (query_dist ? std::string("_") + to_string(*query_dist) : std::string()) + ".txt";
 
-	const std::string filename = log_filename.empty() ? get_available_filename(tmp_filename) : log_filename;
+	const std::string filename = log_filename.empty() ? get_available_filename(with_log_suffix(tmp_filename)) : log_filename;
 
 	std::ofstream out(filename, std::ios::app);
 	if (!out)
@@ -608,13 +638,29 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 
 	std::vector<KeyType> inserted_keys; // with query_dist: the keys inserted so far, in insertion order
 	std::vector<KeyType> batch_queries;
+	std::vector<std::vector<KeyType>> pregenerated; // --pregenerate-queries: queries of every batch, made up front
+
+	if (query_dist && g_pregenerate_queries) {
+		for (int end = 0; end < size;) {
+			const int b_end = std::min(end + n_insertions_per_batch, size);
+			inserted_keys.insert(inserted_keys.end(), data.begin() + end, data.begin() + b_end);
+			pregenerated.emplace_back();
+			generate_queries(*query_dist, inserted_keys, pregenerated.back(),
+			                 static_cast<std::size_t>(std::min(k_queries_per_batch, b_end)));
+			end = b_end;
+		}
+		inserted_keys.clear();
+		inserted_keys.shrink_to_fit();
+	}
 
 	while (total_processed < size) {
 		++batch_no;
 
 		// queries of this batch, over the keys inserted up to the end of its insertions (not timed)
 		const int batch_end = std::min(total_processed + n_insertions_per_batch, size);
-		if (query_dist) {
+		if (query_dist && g_pregenerate_queries) {
+			batch_queries = pregenerated[batch_no - 1];
+		} else if (query_dist) {
 			inserted_keys.insert(inserted_keys.end(), data.begin() + total_processed, data.begin() + batch_end);
 			generate_queries(*query_dist, inserted_keys, batch_queries,
 			                 static_cast<std::size_t>(std::min(k_queries_per_batch, batch_end)));
@@ -716,6 +762,9 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 			boa.stats.reset();
 #endif
 		}
+		out.flush();
+		if (g_pause_between_batches > 0)
+			std::this_thread::sleep_for(std::chrono::seconds(g_pause_between_batches)); // idle, not timed
 	}
 
 	out << "Total\n"
@@ -736,6 +785,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	std::cout << "OS read syscalls:  " << os_delta.syscr << "\n";
 	std::cout << "OS write syscalls: " << os_delta.syscw << "\n";
 	std::cout << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
+	std::cout << "Baseline RSS bytes: " << g_baseline_rss << " (keys generated, structure not yet created)\n"
+	          << "Peak RSS above baseline bytes: " << (peak_rss_bytes() > g_baseline_rss ? peak_rss_bytes() - g_baseline_rss : 0) << "\n";
 	std::cout << "Tiers no: " << boa.get_tiers_no() << "\n";
 
 	out << "OS read_bytes:  " << os_delta.read_bytes << "\n";
@@ -743,6 +794,8 @@ void insertions_with_queries_benchmark(const int pages, const int page_size, con
 	out << "OS read syscalls:  " << os_delta.syscr << "\n";
 	out << "OS write syscalls: " << os_delta.syscw << "\n";
 	out << "Max internal memory bytes: " << boa.max_internal_memory() << "\n";
+	out << "Baseline RSS bytes: " << g_baseline_rss << " (keys generated, structure not yet created)\n"
+	    << "Peak RSS above baseline bytes: " << (peak_rss_bytes() > g_baseline_rss ? peak_rss_bytes() - g_baseline_rss : 0) << "\n";
 	out << "Tiers no: " << boa.get_tiers_no() << "\n";
 
 	if constexpr (is_boa_pv<Boa>()) {
@@ -780,6 +833,8 @@ struct BenchmarkArgs {
 	double routing_filter_mult = 1;
 	bool io_details = true;
 	std::string log_filename; // empty: generated from the parameters
+	bool pregenerate_queries = false; // --pregenerate-queries
+	int pause_between_batches = 0;    // --pause-between-batches S
 	bool interleaved = false; // run insertions_with_queries_benchmark instead of insertions_then_queries_benchmark
 	int insertions_per_batch = 50000;
 	int queries_per_batch = 2000;
@@ -817,6 +872,8 @@ void print_usage(const char* prog) {
 		<< "\n  --boa-pv                  use the boa_pv.h implementation (default " << (defaults.boa_pv ? "on" : "off") << ")"
 		<< "\n  --interleaved             run batches of insertions followed by queries (default " << (defaults.interleaved ? "on" : "off") << ")"
 		<< "\n  --insertions-per-batch N  with --interleaved: insertions per batch (default " << defaults.insertions_per_batch << ")"
+		<< "\n  --pregenerate-queries     with --interleaved and --query-dist: generate every batch's queries before the run (no idle gap between batches)"
+		<< "\n  --pause-between-batches S with --interleaved: sleep S seconds after each batch (idle, not timed)"
 		<< "\n  --queries-per-batch N     with --interleaved: queries per batch (default " << defaults.queries_per_batch << ")"
 		<< "\n                            with --interleaved, --query-dist NAME (one, not shuffled) draws each batch's"
 		<< "\n                            queries from that distribution over the keys inserted so far; without it,"
@@ -839,6 +896,11 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 
 		if (opt == "--interleaved") {
 			args.interleaved = true;
+			continue;
+		}
+
+		if (opt == "--pregenerate-queries") {
+			args.pregenerate_queries = true;
 			continue;
 		}
 
@@ -953,6 +1015,7 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 		else if (opt == "--repeat") target = &args.experiments_no;
 		else if (opt == "--insertions-per-batch") target = &args.insertions_per_batch;
 		else if (opt == "--queries-per-batch") target = &args.queries_per_batch;
+		else if (opt == "--pause-between-batches") target = &args.pause_between_batches;
 		else {
 			std::cerr << "Unknown option: " << opt << "\n";
 			print_usage(argv[0]);
@@ -986,6 +1049,10 @@ BenchmarkArgs parse_args(int argc, char* argv[]) {
 template <typename Boa>
 void run_experiments(const BenchmarkArgs& args) {
 	const int size = args.size;
+	g_pregenerate_queries = args.pregenerate_queries;
+	g_pause_between_batches = args.pause_between_batches;
+	if (args.buffer_size > 0) g_log_name_suffix = "_buf" + std::to_string(args.buffer_size);
+	if (args.pause_between_batches > 0) g_log_name_suffix += "_pause" + std::to_string(args.pause_between_batches);
 	const int buffer_size = args.buffer_size > 0
 		                        ? args.buffer_size
 		                        : BOA_BLOCK_SIZE / Boa::get_run_element_footprint();

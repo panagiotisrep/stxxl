@@ -45,7 +45,11 @@
 #   OUT          results folder (logs only; small)                (default: results/run_<SIZE>_<date>)
 #   DATA_DIR     where the data structures put their files: a local file system with O_DIRECT
 #                support (not /mnt/c under WSL, not tmpfs)     (default: /var/tmp/boa_experiments)
-#   TIMEOUT      seconds per run; a run that takes longer is stopped and marked TIMEOUT (default: 3600)
+#   TIMEOUT      seconds per run; a run that takes longer is stopped and marked TIMEOUT (default: 3600).
+#                Competitor runs that come after the boa and boa_pv runs get TIMEOUT_FACTOR times the time of the
+#                slower of those two instead (see TIMEOUT_FACTOR); TIMEOUT still applies to the boa runs themselves
+#   TIMEOUT_FACTOR  competitor timeout = this factor * seconds of the slower of the runs named boa / boa_pv
+#                (default: 10; 0 = always use TIMEOUT)
 #   BOA_BIN      the boa benchmark binary ("boa" in the file)     (default: build/examples/containers/boa)
 #   STXXL_CFG    .stxxl disk configuration for boa and the STXXL competitors
 #                (default: experiments/stxxl.conf, 60 GiB file in /var/tmp/stxxl, O_DIRECT)
@@ -79,6 +83,8 @@ BLOCK="${BLOCK:-32768}"
 OUT="${OUT:-$ROOT/results/run_${SIZE}_$(date +%Y%m%d_%H%M%S)}"
 DATA_DIR="${DATA_DIR:-/var/tmp/boa_experiments}"
 TIMEOUT="${TIMEOUT:-3600}"
+TIMEOUT_FACTOR="${TIMEOUT_FACTOR:-10}"
+BOA_SLOWEST=0 # seconds of the slower of the finished runs named boa / boa_pv
 BOA_BIN="${BOA_BIN:-$ROOT/build/examples/containers/boa}"
 COMP_BUILD="${COMP_BUILD:-$ROOT/build-competitors}"
 STXXL_CFG="${STXXL_CFG:-$ROOT/experiments/stxxl.conf}"
@@ -198,7 +204,7 @@ peak_rss_kb() { awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print $
 	echo "Repository: $(git -C "$ROOT" rev-parse HEAD) $(git -C "$ROOT" diff --quiet 2>/dev/null && git -C "$ROOT" diff --cached --quiet 2>/dev/null || echo '(uncommitted changes)')"
 	echo "Submodules:"; git -C "$ROOT" submodule status 2>/dev/null | sed 's/^/  /'
 	echo "Workload: ${WORKLOAD[*]}; interleaved runs: batches of $BATCH_INSERTS insertions + $BATCH_QUERIES queries"
-	echo "Mode: FAIR=$FAIR, block $BLOCK, timeout per run $TIMEOUT s"
+	echo "Mode: FAIR=$FAIR, block $BLOCK, timeout per run $TIMEOUT s (competitors: $TIMEOUT_FACTOR x the slower of boa / boa_pv, once those have run)"
 	echo "boa binary: $BOA_BIN"
 	echo "Competitors build: $COMP_BUILD"
 	if [[ -f "$STXXL_CFG" ]]; then echo "STXXL config ($STXXL_CFG):"; awk '{print "  " $0}' "$STXXL_CFG"; else echo "STXXL config: STXXL default"; fi
@@ -245,10 +251,18 @@ for run in $RUNS; do
 	mkdir -p "$cwd"
 	[[ -f "$STXXL_CFG" ]] && cp "$STXXL_CFG" "$cwd/.stxxl"
 	# shellcheck disable=SC2206
-	cmd=("$bin" $opts $extra "${WORKLOAD[@]}" --log-file "$OUT/$run.txt")
+	# interleaved runs take no --query-dist: each batch queries data[rand() % inserted] (boa rejects a list or "all" there)
+	wl=("${WORKLOAD[@]}")
+	[[ " $opts $extra " == *" --interleaved "* ]] && wl=(--size "$SIZE" --queries "$QUERIES" --key-dist "$KEY_DIST")
+	cmd=("$bin" $opts $extra "${wl[@]}" --log-file "$OUT/$run.txt")
 	overhead=0
 	[[ "$limited" == 1 ]] && overhead=$(calibrate_overhead "$run" "$bin" $opts $extra)
-	full=(taskset -c "$CPUS" /usr/bin/time -v timeout "$TIMEOUT" "${cmd[@]}")
+	run_timeout="$TIMEOUT"
+	if ! is_boa "$run" && [[ "$TIMEOUT_FACTOR" != 0 && "$BOA_SLOWEST" -gt 0 ]]; then
+		run_timeout=$(( TIMEOUT_FACTOR * BOA_SLOWEST ))
+		echo "  $run: timeout $run_timeout s = $TIMEOUT_FACTOR x $BOA_SLOWEST s (slower of boa / boa_pv)" | tee -a "$OUT/params.txt"
+	fi
+	full=(taskset -c "$CPUS" /usr/bin/time -v timeout "$run_timeout" "${cmd[@]}")
 	echo "$run: ${full[*]}" >> "$OUT/params.txt"
 	echo "=== $run"
 	echo "${full[*]}" > "$OUT/$run.out"
@@ -273,6 +287,9 @@ for run in $RUNS; do
 		echo "  $run memory: structure ${used:-?} bytes (peak RSS above baseline), budget $budget = M $M + overhead $overhead + slack $((LIMIT_SLACK_MB * 1048576))$([[ -n "$used" && "$used" -gt "$budget" ]] && echo ' -> OVER M')" >> "$OUT/params.txt"
 	fi
 	printf '%-22s %-13s %8s %12s  %s\n' "$run" "$status" "$((SECONDS - start))" "$(( ${rss:-0} / 1024 ))" "$mem" | tee -a "$OUT/summary.txt"
+	if [[ "$run" == boa || "$run" == boa_pv ]] && [[ "$status" == ok ]] && (( SECONDS - start > BOA_SLOWEST )); then
+		BOA_SLOWEST=$((SECONDS - start))
+	fi
 	rm -rf -- "$cwd"
 done
 for f in "$OUT"/boa*.txt; do # compile-time parameters of the BOA binary, as it logged them

@@ -17,3 +17,5 @@ add_executable(leveldb_bench leveldb_bench.cpp)
 # workloads.h is header-only and uses only the standard library.
 target_include_directories(leveldb_bench PRIVATE ${REPO_ROOT}/include ${COMPETITORS_DIR})
 target_link_libraries(leveldb_bench PRIVATE leveldb)
+# LevelDB is built without RTTI; direct_env.h derives from its classes, so the driver must be compiled without RTTI too.
+target_compile_options(leveldb_bench PRIVATE -fno-rtti)

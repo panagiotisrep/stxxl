@@ -14,6 +14,10 @@ unchanged.
 | LeanStore (B-tree) | `extern/leanstore` — https://github.com/leanstore/leanstore | commit `fcb64bf` (no releases) | online mode, interleaved | [leanstore/README.md](leanstore/README.md) |
 | STXXL `map` (B+-tree), `unordered_map` | this repository | same build as `boa` | online mode, interleaved | [stxxl/README.md](stxxl/README.md) |
 | SILT | `extern/silt` — https://github.com/ByteHamster/silt (build fixes of https://github.com/silt/silt) | branch `build-fix`, commit `55ee50b` | combined store: online mode, interleaved; sorted store: online-suspended mode | [silt/README.md](silt/README.md) |
+| LMDB | `extern/lmdb` — https://github.com/LMDB/lmdb | release `LMDB_0.9.36` (`028f61b`) | online mode, interleaved | [lmdb/README.md](lmdb/README.md) |
+| WiredTiger | `extern/wiredtiger` — https://github.com/wiredtiger/wiredtiger | tag `mongodb-9.0.8` (`0e87e9f`) | online mode, interleaved | [wiredtiger/README.md](wiredtiger/README.md) |
+| SplinterDB | `extern/splinterdb` — https://github.com/vmware/splinterdb | commit `73f89d8` (`main`, no releases) | online mode, interleaved | [splinterdb/README.md](splinterdb/README.md) |
+| FASTER | `extern/faster` — https://github.com/microsoft/FASTER | release `v2.6.5` (`e25782f`) | online mode, interleaved | [faster/README.md](faster/README.md) |
 
 ```
 experiments/competitors/
@@ -69,6 +73,9 @@ build). Package names for Ubuntu/Debian (tested on Ubuntu 24.04):
 | STXXL map / unordered_map | none beyond `boa`'s |
 | `experiments/run_all.sh` | `time` (`/usr/bin/time`), `python3` (`summarize.py`), `util-linux` (`taskset`, preinstalled), a systemd user session with cgroup v2 for the memory limit (`systemd-run --user --scope`; on WSL2 set `systemd=true` in `/etc/wsl.conf`) |
 | SILT | `libxerces-c-dev`, `libssl-dev`, `libgsl-dev`, `libtbb-dev`, `libboost-dev` |
+| LMDB, WiredTiger | none (WiredTiger is built without compression libraries) |
+| SplinterDB | `libaio-dev`, `libxxhash-dev`, `libconfig-dev` |
+| FASTER | `libaio-dev`, `uuid-dev`, `libtbb-dev` |
 
 All at once, with the script (uses `sudo` when not run as root):
 

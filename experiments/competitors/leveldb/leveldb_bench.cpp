@@ -13,6 +13,7 @@
 #include <leveldb/write_batch.h>
 
 #include "common.h"
+#include "direct_env.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -36,6 +37,7 @@ struct Args {
 	bool compact_before_queries = true;
 	int write_batch = 0;   // 0: one DB::Put per key (LevelDB default usage); N: N keys per leveldb::WriteBatch
 	bool keep_db = false;
+	bool direct_io = false; // table files with O_DIRECT (direct_env.h)
 };
 
 void print_usage(const char* prog) {
@@ -51,6 +53,7 @@ void print_usage(const char* prog) {
 		<< "\n  --max-open-files N        Options::max_open_files (default " << d.max_open_files << ")"
 		<< "\n  --cache-size B            block cache in bytes (default: LevelDB's internal 8 MiB cache)"
 		<< "\n  --bloom-bits N            Bloom filter bits per key (default: no filter)"
+		<< "\n  --direct-io               open the table files (.ldb) with O_DIRECT through a custom Env (direct_env.h); log and MANIFEST stay buffered"
 		<< "\n  --sync                    WriteOptions::sync = true (default false)"
 		<< "\n  --no-compact-before-queries  skip the CompactRange over the whole key range that runs after the"
 		<< "\n                              insertions (default: compact; timed separately as Compaction)"
@@ -71,6 +74,7 @@ Args parse_args(int argc, char* argv[]) {
 
 		if (opt == "--help" || opt == "-h") { print_usage(argv[0]); std::exit(0); }
 		else if (parse_workload_option(argc, argv, i, args.w)) continue;
+		else if (opt == "--direct-io") args.direct_io = true;
 		else if (opt == "--sync") args.sync = true;
 		else if (opt == "--compact-before-queries") args.compact_before_queries = true;
 		else if (opt == "--no-compact-before-queries") args.compact_before_queries = false;
@@ -117,6 +121,7 @@ public:
 		options_.block_restart_interval = args.block_restart_interval;
 		options_.max_open_files = args.max_open_files;
 		options_.block_cache = cache_.get();
+		if (args.direct_io) options_.env = &direct_env_;
 		options_.filter_policy = filter_.get();
 		// compression: left at LevelDB's default (kSnappyCompression). leveldb/build.sh builds LevelDB
 		// without Snappy, so blocks are stored uncompressed (see README).
@@ -187,6 +192,7 @@ public:
 		   << "\nLevelDB block_restart_interval " << options_.block_restart_interval
 		   << "\nLevelDB max_open_files " << options_.max_open_files
 		   << "\nLevelDB block cache " << (args_.cache_size > 0 ? std::to_string(args_.cache_size) : "default (8388608)")
+		   << "\nLevelDB direct I/O (O_DIRECT on table files) " << (args_.direct_io ? "yes" : "no")
 		   << "\nLevelDB filter " << (args_.bloom_bits > 0 ? "bloom " + std::to_string(args_.bloom_bits) + " bits/key" : "none")
 		   << "\nLevelDB compression option " << (options_.compression == leveldb::kSnappyCompression ? "snappy" : "none")
 		   << " (built without Snappy: stored uncompressed)"
@@ -203,6 +209,7 @@ public:
 
 private:
 	const Args& args_;
+	direct_env::DirectEnv direct_env_; // must outlive db_ (declared before it)
 	std::unique_ptr<leveldb::Cache> cache_;
 	std::unique_ptr<const leveldb::FilterPolicy> filter_;
 	leveldb::Options options_;
