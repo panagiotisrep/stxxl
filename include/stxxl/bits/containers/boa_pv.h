@@ -1599,23 +1599,12 @@ STXXL_BEGIN_NAMESPACE
           return index;
         };
 
-        // run_element min_key;
-        // min_key.m_hash = std::numeric_limits<HashType>::max();
-        std::vector<unsigned int> buckets_size(intervals_no, 0);
-
-        for (uint i = 0; i < target_tier_run_size; i++) {
-          auto h = hash_extractor(log[log_offset + i]);
-          if (h == 0) {
-            continue;
-          }
-          ++buckets_size[bucket_index(h)];
-        }
-
-        const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-        final.m_run_size = max_bucket_size * intervals_no;
+        // No bin padding: pv's directory and element pointers store exact positions, so find() never
+        // locates a bin by its slot. The run holds exactly its elements, as in the online path.
+        final.m_run_size = target_tier_run_size;
         final.m_elements_number = target_tier_run_size;
-        final.m_bucket_size = max_bucket_size;
-        final.m_run.resize(max_bucket_size * intervals_no);
+        final.m_bucket_size = 0;
+        final.m_run.resize(target_tier_run_size);
 
         final.m_max_hash = max;
         final.m_min_hash = min;
@@ -1637,18 +1626,6 @@ STXXL_BEGIN_NAMESPACE
 
           auto elem = run_element(log[log_offset++]);
 
-          while (bucket_index(elem.m_hash) != at_bucket) {
-            final.m_run[index++] = empty_element; // fill bucket
-            // index++;
-            // empty_elements_added++;
-            ++added;
-            ++total_added;
-            if (added == max_bucket_size) {
-              ++at_bucket;
-              added = 0;
-            }
-          }
-
           auto prev_route = directory_get(m_tiers[at_tier], elem.m_hash);
           if (prev_route.first > run_index) {
             prev_route.first = 0;
@@ -1660,13 +1637,6 @@ STXXL_BEGIN_NAMESPACE
           directory_insert(m_tiers[at_tier], run_index, index, elem.m_hash);
 
           final.m_run[index++] = elem;
-
-          ++added;
-
-          if (added == max_bucket_size) {
-            ++at_bucket;
-            added = 0;
-          }
         } // for (uint i=0 ; i <target_tier_run_size ; i++).
 
         while (index < final.m_run.size()) {
@@ -2000,8 +1970,10 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
         auto const & log = m_lazy_insertion_log;
         auto log_hash = [&log](size_t i) { return log[i].m_hash; };
 #endif
-        if (!lazy_runs_beginnings.empty()) {
-          for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
+        // only the log chunks merged into this run: with the merge strategy they start where the previous
+        // run's chunks ended, not at 0 (the run is sized exactly, so earlier chunks must not be counted)
+        for (auto const begin : lazy_runs_beginnings) {
+          for (size_t i = begin; i < begin + m_in_memory_table_max_size; ++i) {
             auto h = log_hash(i);
             if (min > h)
             {
@@ -2032,41 +2004,15 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
 
         run_element min_key;
 
-        std::vector<unsigned int> buckets_size(intervals_no, 0);
-        for (auto const& source : displaced_runs)
-        {
-          min_key.m_hash = std::numeric_limits<HashType>::max();
-          external_vector const& v = source->m_run;
-
-          for (int i = 0; i < v.size(); ++i)
-          {
-            auto h = v[i].m_hash;
-            if (h == 0)
-            {
-              continue;
-            }
-            ++buckets_size[bucket_index(h)];
-          }
-        }
-
-        if (!lazy_runs_beginnings.empty()) {
-          for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
-            auto h = log_hash(i);
-            if (h == 0) {
-              continue;
-            }
-            ++buckets_size[bucket_index(h)];
-          }
-        }
-        const auto max_bucket_size = *std::max_element(buckets_size.begin(), buckets_size.end());
-
+        // No bin padding (see sorted_vector_to_run): the run holds exactly its elements, so the displaced
+        // runs are not read an extra time to count bin sizes.
         run_element empty_element;
         empty_element.m_hash = 0;
 
         run& final = m_tiers[dest_tier].m_runs[run_index];
         final.active = true;
-        final.m_run_size = max_bucket_size * intervals_no;
-        final.m_bucket_size = max_bucket_size;
+        final.m_run_size = total_elements;
+        final.m_bucket_size = 0;
         final.m_max_hash = max;
         final.m_min_hash = min;
         final.m_bucket_interval = interval_size;
@@ -2173,19 +2119,6 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           // }
 
           min_key = min_item.elem;
-          while (bucket_index(min_key.m_hash) != at_bucket)
-          {
-            final.m_run[index++] = empty_element; // fill bucket
-            // index++;
-            empty_elements_added++;
-            ++added;
-            ++total_added;
-            if (added == max_bucket_size)
-            {
-              ++at_bucket;
-              added = 0;
-            }
-          }
 
           auto prev_route = directory_get(m_tiers[dest_tier], min_key.m_hash);
           if (prev_route.first > run_index)
@@ -2209,15 +2142,6 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           ++(final.m_elements_number);
 
           ++total_added;
-
-          ++added;
-
-          if (added == max_bucket_size)
-          {
-            ++at_bucket;
-            added = 0;
-          }
-
 
           HeapItem item;
           bool _added{false};
@@ -2256,9 +2180,10 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
             // heap.erase(heap.begin() + min_index_in_heap);
           }
         }
-        while (index < final.m_run.size())
+        if (index != final.m_run.size())
         {
-          final.m_run[index++] = empty_element;
+          std::cout << "ERROR: merged " << index << " elements into a run of size " << final.m_run.size() << std::endl;
+          throw std::runtime_error("ERROR: merged element count differs from the run size");
         }
         if (!heap.empty()) {
           std::cout << "ERROR: heap not empty" << std::endl;
