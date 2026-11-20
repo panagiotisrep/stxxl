@@ -1328,8 +1328,13 @@ STXXL_BEGIN_NAMESPACE
         unsigned int target_tier_run_size = m_in_memory_table_max_size * pow(
                                             RunsPerTier, target_tier);
 
-        if (m_lazy_insertion_log.size() + old_elements < target_tier_run_size) {
-          std::cout << "Error: Lazy insertion log size (" << m_lazy_insertion_log.size() << ") + old elements (" <<
+#ifdef IN_MEMORY_SORT
+        const size_t lazy_log_size = m_in_memory_lazy_table.size();
+#else
+        const size_t lazy_log_size = m_lazy_insertion_log.size();
+#endif
+        if (lazy_log_size + old_elements < target_tier_run_size) {
+          std::cout << "Error: Lazy insertion log size (" << lazy_log_size << ") + old elements (" <<
               old_elements << ") is less than target tier run size (" << target_tier_run_size << ")" << std::endl;
           throw std::runtime_error("Error: Lazy insertion log size + old elements is less than target tier run size");
         }
@@ -1405,7 +1410,11 @@ STXXL_BEGIN_NAMESPACE
           }
         }
 
+#ifdef IN_MEMORY_SORT
+        auto const & v = m_in_memory_lazy_table; // run_element has a constructor from its entries
+#else
         auto const v = m_lazy_insertion_log;
+#endif
         consumed_log_elements = target_tier_run_size - displaced_elements;
         for (int i=0 ; i < consumed_log_elements ; i++) {
           tmp[index++] = v[i];
@@ -1984,10 +1993,16 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
           total_elements += source->m_elements_number;
         }
 
+#ifdef IN_MEMORY_SORT
+        auto const & log = m_in_memory_lazy_table; // item.elem = log[j] uses run_element's constructor from its entries
+        auto log_hash = [&log](size_t i) { return log[i].second.first; };
+#else
         auto const & log = m_lazy_insertion_log;
+        auto log_hash = [&log](size_t i) { return log[i].m_hash; };
+#endif
         if (!lazy_runs_beginnings.empty()) {
           for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
-            auto h = log[i].m_hash;
+            auto h = log_hash(i);
             if (min > h)
             {
               min = h;
@@ -2036,7 +2051,7 @@ void merge_runs(std::vector<run*> const& displaced_runs, std::vector<size_t> laz
 
         if (!lazy_runs_beginnings.empty()) {
           for (int i = 0; i < m_in_memory_table_max_size + lazy_runs_beginnings.back(); ++i) {
-            auto h = log[i].m_hash;
+            auto h = log_hash(i);
             if (h == 0) {
               continue;
             }
