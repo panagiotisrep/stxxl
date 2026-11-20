@@ -142,6 +142,15 @@ STXXL_BEGIN_NAMESPACE
         size_t visited_routing_filter{0};
         size_t empty_elements{0};
         size_t searches{0};
+        size_t fallback_scans{0};   // whole-run scans after the bucket scan found no prefix
+        size_t fallback_elements{0}; // elements visited by those scans
+        size_t fb_no_prefix{0};      // fallback: bucket held no element with the query prefix
+        size_t fb_prefix_seen{0};    // fallback: bucket held prefix elements but none gave a new run
+        size_t fb_hash_below_min{0}; // fallback: query hash < run min hash
+        size_t fb_found_in_scan{0};  // fallback scan found the key
+        size_t fb_dist[5]{}; size_t fb_prefix_in_run{0}, fb_pref_before{0}, fb_pref_after{0}, fb_pref_inside{0}, fb_start_is_last{0};
+        size_t neighbour_scans{0}; // neighbour-bucket scans
+        size_t fb_tier[8]{};         // fallback scans per tier
 
         std::unordered_map<int32, size_t> elements_per_tier;
         std::unordered_map<int32, size_t> runs_per_tier;
@@ -169,6 +178,14 @@ STXXL_BEGIN_NAMESPACE
           ss << "Searches [" << searches
             << "], Visited runs [" << visited_runs
             << "], Visited total elements [" << visited_elements
+            << "], Fallback whole-run scans [" << fallback_scans
+            << "], Fallback elements [" << fallback_elements
+            << "], fb_no_prefix [" << fb_no_prefix << "], fb_prefix_seen [" << fb_prefix_seen
+            << "], fb_hash_below_min [" << fb_hash_below_min << "], fb_found_in_scan [" << fb_found_in_scan
+            << "], prefix_in_run [" << fb_prefix_in_run << "], before [" << fb_pref_before << "], after [" << fb_pref_after << "], inside [" << fb_pref_inside
+            << "], dist_buckets(<=1,<=2,<=4,<=16,>16) [" << fb_dist[0] << "," << fb_dist[1] << "," << fb_dist[2] << "," << fb_dist[3] << "," << fb_dist[4]
+            << "], neighbour_bucket_scans [" << neighbour_scans
+            << "], fb_tier [" << fb_tier[0] << "," << fb_tier[1] << "," << fb_tier[2] << "," << fb_tier[3] << "]"
             << "]\n";
           return ss.str();
         }
@@ -180,6 +197,11 @@ STXXL_BEGIN_NAMESPACE
           visited_routing_filter = 0;
           empty_elements = 0;
           searches = 0;
+          fallback_scans = 0;
+          neighbour_scans = 0;
+          fallback_elements = 0;
+          fb_no_prefix = fb_prefix_seen = fb_hash_below_min = fb_found_in_scan = 0;
+          for (auto& x : fb_tier) x = 0;
           elements_per_tier.clear();
           runs_per_tier.clear();
         }
@@ -405,7 +427,7 @@ STXXL_BEGIN_NAMESPACE
         //check external-memory
         auto bucket_index = [](HashType const& h, run const& r)
         {
-          if (h - r.m_min_hash < 0)
+          if (h < r.m_min_hash) // (h - min < 0 never holds for an unsigned hash)
           {
             return 0;
           }
@@ -459,10 +481,24 @@ STXXL_BEGIN_NAMESPACE
               auto const& data_v = m_elements;
 
               bool found_prefix_in_bucket = false;
+              size_t fb_prefix_elems = 0;
               auto tmp = run_to_search;
 
 
-              for (int at = start; at < stop; at++)
+              // the prefix of the query can lie across a bucket boundary: if the query's bucket holds no usable
+              // link, look at the previous and at the next bucket (the run is sorted by hash) before scanning the run
+              for (int cand = 0; cand < 3 && !found_prefix_in_bucket; ++cand)
+              {
+              std::size_t cstart = start, cstop = stop;
+              if (cand == 1) {
+                if (start < r.m_bucket_size) continue;
+                cstart = start - r.m_bucket_size; cstop = start;
+              } else if (cand == 2) {
+                if (end >= r.m_run.size()) continue;
+                cstart = end; cstop = r.m_run.size() < end + r.m_bucket_size ? r.m_run.size() : end + r.m_bucket_size;
+              }
+              if (cand > 0) ++stats.neighbour_scans;
+              for (std::size_t at = cstart; at < cstop; at++)
               {
                 ++stats.visited_elements;
                 stats.elements_per_tier[at_tier] += 1;
@@ -486,6 +522,7 @@ STXXL_BEGIN_NAMESPACE
                 }
                 else if (tier.m_routing_filter->equal_prefixes(h, hash))
                 {
+                  ++fb_prefix_elems;
                   if (e.m_prev_run != run_to_search.first && e.m_prev_run != -1 && !visited_runs.contains(e.m_prev_run))
                   {
                     visited_runs.push_unique(e.m_prev_run);
@@ -503,14 +540,23 @@ STXXL_BEGIN_NAMESPACE
                   }
                 }
               } // for (int at = start; at < stop; at++).
+              } // for (cand): bucket, then the previous and the next bucket
 
               if (!found_prefix_in_bucket) {
                run_element e;
+               ++stats.fallback_scans;
+               size_t fb_first_prefix = (size_t)-1;
+               if (fb_prefix_elems == 0) ++stats.fb_no_prefix; else ++stats.fb_prefix_seen;
+               if (hash < r.m_min_hash) ++stats.fb_hash_below_min;
+               if (at_tier < 8) ++stats.fb_tier[at_tier];
               for (int at = 0; at < v.size() ; ++at) {
+                ++stats.fallback_elements;
                 ++stats.visited_elements;
                 stats.elements_per_tier[at_tier] += 1;
                 e = v[at];
                 auto h = e.m_hash;
+                if (h != 0 && h != hash && fb_first_prefix == (size_t)-1 && tier.m_routing_filter->equal_prefixes(h, hash))
+                  fb_first_prefix = at;
                 if (h == 0)
                 {
                   ++stats.empty_elements;
@@ -533,6 +579,17 @@ STXXL_BEGIN_NAMESPACE
                     found_prefix_in_bucket = true;
                     break;
                   }
+                }
+              }
+              if (fb_first_prefix != (size_t)-1) {
+                ++stats.fb_prefix_in_run;
+                if (fb_first_prefix < start) ++stats.fb_pref_before;
+                else if (fb_first_prefix >= stop) ++stats.fb_pref_after;
+                else ++stats.fb_pref_inside;
+                {
+                  size_t gap = fb_first_prefix < start ? start - fb_first_prefix : (fb_first_prefix >= stop ? fb_first_prefix - stop + 1 : 0);
+                  double bk = double(gap) / double(r.m_bucket_size);
+                  ++stats.fb_dist[bk <= 1 ? 0 : bk <= 2 ? 1 : bk <= 4 ? 2 : bk <= 16 ? 3 : 4];
                 }
               }
 
