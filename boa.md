@@ -13,7 +13,8 @@ Benchmarks two external-memory hash table implementations:
 
 Settings come in two kinds:
 
-- **Compile-time macros**: structure parameters, `IN_MEMORY_SORT` and debug checks. Set them with `#define`
+- **Compile-time macros**: structure parameters, `BOA_KEEP_MERGED_RUNS`, `IN_MEMORY_SORT`,
+  `BOA_LAZY_DIRECTORY` and debug checks. Set them with `#define`
   at the top of `boa.cpp` or with `-D` on the compiler command line (see [Setting macros](#setting-macros)).
 - **Command-line options**: everything else, including online-suspended mode and its materialization
   strategy, chosen per run without recompiling.
@@ -99,8 +100,10 @@ the key-value data vector):
 Index bytes: runs <B>, directories <B>, total <B>, per element <B>
 ```
 
-`runs` is the allocated size of all run vectors (bin padding included; merged runs count 0 unless
-`BOA_KEEP_MERGED_RUNS`), `directories` the full size of every tier directory, `per element` = total / `--size`.
+`runs` is the allocated size of all run vectors (bin padding included for `boa.h`; `boa_pv.h` runs are not
+padded; merged runs count 0 unless `BOA_KEEP_MERGED_RUNS`), `directories` the full size of every tier
+directory (also with `BOA_LAZY_DIRECTORY`: all its blocks are allocated, only unwritten ones are not
+initialized), `per element` = total / `--size`.
 
 pv runs also log:
 
@@ -126,6 +129,13 @@ pointer directory entries, like online insertion).
 | `merge` | Each buffer is sorted when flushed to the staging log; consolidation k-way merges those sorted chunks into the final runs. |
 | `sort` | Buffers are appended unsorted; the whole log is sorted once at consolidation (`stxxl::sort`), then copied into the final runs. Displaced old runs are re-sorted together with the log. |
 | `hybrid` (default) | As `sort`, but displaced old runs are merged into the promoted run instead of re-sorted. |
+
+Run layout: `boa.h` pads every run's hash bins to the largest bin (its lookups locate a bin by slot).
+`boa_pv.h` does not pad, in either mode: its directory entries and element pointers store exact positions,
+so its runs hold exactly their elements (16 B each).
+
+One consolidation into an empty structure cuts the sorted log into runs tier 0 first, so each tier holds
+its own contiguous hash range and its runs are consecutive slices of it.
 
 What the benchmark does in this mode:
 
@@ -165,11 +175,50 @@ appears. Clearing costs no I/O, only block-manager bookkeeping. At 50M (boa, 32 
 each), insertion took 187 s with clearing and 205 s without, with the same query time.
 Online-suspended mode is not affected by this macro (its `resize(0)` calls also keep the blocks).
 
-### `IN_MEMORY_SORT` (compile-time, untested)
+### `IN_MEMORY_SORT` (online-suspended mode)
 
-Keeps the staging log in RAM (`m_in_memory_lazy_table`) and sorts it with ips2ra instead of an external
-STXXL vector. It compiles with all strategies, but some consolidation paths still read the external log,
-so it is not expected to work; don't use it for results.
+Keeps the staging log in RAM (`m_in_memory_lazy_table`, 24 B per element) instead of an external STXXL
+vector, and sorts it with ips2ra (parallel in-memory radix sort) instead of `stxxl::sort`. The key-value
+pairs still go to the external data vector. Every consolidation path reads the in-memory log, including
+displacing old runs (`displace_old_runs`, lazy `merge_runs`), so later consolidations (interleaved
+suspended mode) work too.
+
+Tested: `sort` and `hybrid`, `boa.h` and `boa_pv.h`, insert-then-query and interleaved; `merge` with
+`boa_pv.h`. The log's RAM grows with the number of staged elements (about 1.2 GB at 50M), so this does not
+respect the memory budget; report it as such.
+
+Measured (pv, hybrid, 32 KiB blocks, λ 16): at 10M the sort takes 0.17 s instead of 1.3 s with
+`stxxl::sort` (whole construction about 10–12 s instead of 11–16 s); at 50M the sort takes 0.9 s and the
+whole construction 17–18 s.
+
+### `BOA_LAZY_DIRECTORY` (both implementations, both modes)
+
+The directory (`routing_filter`) is never zero-filled. A RAM bitmap with one bit per directory block
+records which blocks have been written since the directory was created; everything is inside
+`routing_filter` in `boa.h` and `boa_pv.h`:
+
+- create and `reset()`: drop the STXXL vector and allocate a new one. No I/O (STXXL creates pages
+  uninitialized and never reads an uninitialized page).
+- lookup in a block never written: empty, without touching the vector (no I/O).
+- first write into a block: the block is zeroed in the cache (no read), then the entry is written.
+
+Extra RAM: 1/(8·B) of the directory size, a few KB (pv, 500M, λ 64, 64 KiB blocks: about 8 KB).
+
+Online-suspended mode gains the most. Construction drops the zero fill and the read-back of every
+directory block. Queries gain because each tier holds its own hash range (see
+[Online-suspended mode](#online-suspended-mode)), so lookups in the other tiers land in never-written
+blocks and cost no I/O. At 50M (hybrid, `IN_MEMORY_SORT`, 32 KiB blocks, λ 16, 20,000 queries, 2 runs each):
+
+| | construction | 20k queries | query block reads | disk read / written |
+|---|---|---|---|---|
+| pv | 17.1 / 18.4 s | 23.1 / 21.6 s | 106,049 | 3.93 / 2.08 GB |
+| pv, `BOA_LAZY_DIRECTORY` | 11.6 / 13.3 s | 14.9 / 13.8 s | 59,853 | 1.96 / 1.51 GB |
+| boa | 17.3 / 18.0 s | 21.8 / 20.2 s | 95,088 | 3.34 / 2.13 GB |
+| boa, `BOA_LAZY_DIRECTORY` | 15.0 / 15.3 s | 13.5 / 14.0 s | 59,845 | 1.96 / 1.84 GB |
+
+Online mode gains little (estimate, not measured): each run still reads and rewrites the tier's directory
+blocks, and only the zero fill and the first run's read-back go away, about 2/(2λ+1) of the directory
+traffic (6% at λ 16). Every tier covers the whole hash range there, so queries do not gain.
 
 ### Debug: `BOA_PV_CHECK_DIRECTORY`
 

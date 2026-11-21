@@ -48,16 +48,24 @@ STXXL_BEGIN_NAMESPACE
       explicit routing_filter(const uint64_t entries)
       {
         prefix_bits_length_ = std::ceil(std::log2(entries));
+#ifdef BOA_LAZY_DIRECTORY
+        create(size_t(std::pow(2, prefix_bits_length_)));
+#else
         m_filter = std::unique_ptr<routing_external_vector>(
           new routing_external_vector(std::pow(2, prefix_bits_length_)));
         reset();
+#endif
       }
 
       void reset()
       {
+#ifdef BOA_LAZY_DIRECTORY
+        create(m_filter->size());
+#else
         routing_element element;
         element.run = 0;
         std::fill(m_filter->begin(), m_filter->end(), element);
+#endif
       }
 
       size_t get_bits(HashType const& x, const unsigned bits_length) noexcept
@@ -100,6 +108,10 @@ STXXL_BEGIN_NAMESPACE
       std::pair<run_index, index_in_run> get_run_index(HashType const& hash)
       {
         auto index = get_index_from_hash(hash);
+#ifdef BOA_LAZY_DIRECTORY
+        if (!block_written(index))
+          return {-1, 0}; // empty
+#endif
         routing_external_vector const& v = *m_filter;
         routing_element ret = v[index];
         ret.run -= 1;
@@ -109,6 +121,9 @@ STXXL_BEGIN_NAMESPACE
       void insert(run_index r_index, index_in_run index_in_r, HashType const& hash)
       {
         auto index = get_index_from_hash(hash);
+#ifdef BOA_LAZY_DIRECTORY
+        prepare_block_for_write(index);
+#endif
         routing_element element;
         element.run = r_index + 1;
         (*m_filter)[index] = element;
@@ -118,6 +133,42 @@ STXXL_BEGIN_NAMESPACE
       {
         this->m_filter->flush();
       }
+#ifdef BOA_LAZY_DIRECTORY
+    private:
+      // BOA_LAZY_DIRECTORY: the directory is never zero-filled. Blocks not written since the directory was
+      // (re)created count as empty; one bit per block in RAM records which were written.
+      //  - create/reset: drop the vector and allocate a new one. No I/O: STXXL creates pages uninitialized
+      //    and never reads an uninitialized page.
+      //  - lookup in an unwritten block: empty, without touching the vector (no I/O).
+      //  - first write into a block: zero the block in the cache (no read), then write the entry.
+      static constexpr size_t entries_per_block = routing_external_vector::block_type::size;
+      std::vector<bool> m_written_blocks;
+
+      void create(size_t entries)
+      {
+        m_filter.reset(); // free the old blocks before allocating the new ones
+        m_filter = std::unique_ptr<routing_external_vector>(new routing_external_vector(entries));
+        m_written_blocks.assign((entries + entries_per_block - 1) / entries_per_block, false);
+      }
+
+      bool block_written(size_t index) const
+      {
+        return m_written_blocks[index / entries_per_block];
+      }
+
+      void prepare_block_for_write(size_t index)
+      {
+        const size_t block = index / entries_per_block;
+        if (m_written_blocks[block])
+          return;
+        const size_t begin = block * entries_per_block;
+        const size_t end = std::min(begin + entries_per_block, size_t(m_filter->size()));
+        const routing_element empty{};
+        for (size_t i = begin; i < end; ++i)
+          (*m_filter)[i] = empty;
+        m_written_blocks[block] = true;
+      }
+#endif
     };
 
 
